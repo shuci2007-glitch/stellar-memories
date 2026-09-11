@@ -1,0 +1,28 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+.env
+.env.*
+!.env.example
+*.log
+*.db
+*.db-*
+*.sqlite*
+*.spc
+*.pem
+*.key
+*.pfx
+*.p12
+*.bak
+.test-env/
+.venv/
+output/
+reference/
+.playwright-cli/
+scripts/terrain-cache/
+# 边界数据随安装包分发:世界轮廓为公有领域 Natural Earth,
+# 中国省市边界来自 DataV.GeoAtlas,来源与条款见 THIRD_PARTY_NOTICES.md。
+
+.local-map-data/
+.local-reference-excluded/

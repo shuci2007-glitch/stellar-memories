@@ -1,0 +1,24 @@
+name: Windows checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: python scripts/audit-source.py
+      - run: npm test
+      - run: npm run build
+      - run: cargo test --release --manifest-path src-tauri/Cargo.toml
+      - run: ./scripts/build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stellar-memories-windows-installer
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe

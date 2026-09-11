@@ -1,0 +1,93 @@
+.province-wall { position:absolute; inset:0; z-index:90; display:flex; flex-direction:column; background:#f7f1e3; color:#526457; border-radius:0 0 22px 22px; box-shadow:0 20px 80px #0005; overflow:hidden; }
+.province-wall button,.province-wall input,.province-wall textarea { color:inherit; }
+.province-wall-header { display:flex; justify-content:space-between; align-items:center; gap:24px; padding:22px 32px 18px; border-bottom:1px solid #c5cfb95c; background:#fbf6eaff; flex-shrink:0; }
+.province-wall-header small { color:#9caa8e; letter-spacing:.2em; font-size:11px; }
+.province-wall-header h1 { font-family:'KaiTi','STKaiti','楷体',cursive; font-size:31px; font-weight:500; margin:9px 0; }
+.province-wall-header h1 span { font-size:22px; color:#8c9e8a; }
+.province-wall-header p { color:#8b9484; font-size:11px; }
+.province-wall-tools { display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.province-wall-tools button { border:1px solid #c5cdb8; padding:9px 14px; border-radius:18px; background:#fffaf0; font-size:12px; transition:background 200ms ease,transform 200ms ease; }
+.province-wall-tools button:hover { background:#e5ebd6; transform:translateY(-1px); }
+.province-wall-workspace { flex:1; min-height:0; display:flex; }
+.province-wall-viewport { flex:1; min-width:0; overflow:hidden; position:relative; touch-action:none; cursor:grab; background:radial-gradient(ellipse at 30% 30%,#f0eedf,transparent 65%),#e8e6d9; }
+.province-wall-board { position:absolute; top:0; left:0; will-change:transform; background:#fcf8eb80; border-radius:24px; box-shadow:0 6px 35px #82937b18; }
+.province-wall-map,.province-wall-threads { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.wall-map-title { fill:#96a58d; font-family:'KaiTi','STKaiti','楷体',cursive; font-size:29px; letter-spacing:3px; }
+.wall-landmark { color:#ac8e66; }
+.wall-landmark { filter:drop-shadow(0 3px 2px #6e70552a); }
+.wall-landmark text { fill:#9b825e; font-size:15px; font-family:'KaiTi','STKaiti','楷体',cursive; paint-order:stroke; stroke:#fff9e7; stroke-width:4; stroke-linejoin:round; }
+.wall-thread { fill:none; stroke:#9a7852; stroke-width:4; stroke-linecap:round; filter:drop-shadow(0 2px 1px #b29f7a22); }
+.wall-tether { fill:none; stroke:#bd9780; stroke-width:1; stroke-dasharray:3 5; opacity:.65; }
+.province-wall-card { position:absolute; width:146px; height:122px; perspective:700px; will-change:transform; }
+.wall-card-clip { position:absolute; width:6px; height:4px; background:#bca27d; border-radius:45%; left:70px; top:-2px; z-index:3; box-shadow:0 1px 1px #5c49332b; pointer-events:none; }
+.wall-card-clip::before,.wall-card-clip::after { content:''; position:absolute; width:7px; height:4px; border:1px solid #b69b76; border-radius:50%; top:-1px; box-shadow:inset 0 1px #e9dab966; }
+.wall-card-clip::before { left:-5px; transform:rotate(24deg); }
+.wall-card-clip::after { right:-5px; transform:rotate(-24deg); }
+.wall-card-flipper { position:relative; width:100%; height:100%; transform-style:preserve-3d; transition:transform 700ms cubic-bezier(.3,.65,.2,1); }
+.wall-card-flipper.is-flipped { transform:none; }
+.wall-card-front,.wall-card-back { position:absolute; inset:0; -webkit-backface-visibility:hidden; backface-visibility:hidden; background:#fffdf5; border:1px solid #e8e2d3; border-radius:3px; box-shadow:0 4px 12px #46543b28; overflow:hidden; }
+.wall-card-image { display:block; width:100%; height:96px; padding:7px 7px 0; }
+.wall-card-image img { width:100%; height:100%; object-fit:contain; display:block; }
+.wall-card-front footer { height:25px; display:flex; align-items:center; justify-content:space-between; gap:2px; padding:0 6px; color:#918776; font-size:8px; font-family:'KaiTi','STKaiti','楷体',cursive; }
+.wall-card-front footer button { font-size:10px; }
+.wall-card-back { transform:rotateY(-180deg); padding:9px; background:repeating-linear-gradient(#fff9df 0 21px,#d8d2b64d 21px 22px); display:flex; flex-direction:column; }
+.wall-card-back textarea { flex:1; min-height:0; width:100%; resize:none; font-family:'KaiTi','STKaiti','楷体',cursive; line-height:22px; font-size:15px; color:#716b59; }
+.wall-card-back button { align-self:flex-end; font-size:10px; color:#9d8d6c; }
+.province-wall-journal { flex:0 0 254px; padding:24px; background:#fcf7e9; border-left:1px solid #d6dac7; display:flex; flex-direction:column; gap:12px; overflow:auto; }
+.province-wall-journal>small { color:#a3a187; letter-spacing:.13em; font-size:10px; }
+.province-wall-journal h2 { font-family:'KaiTi','STKaiti','楷体',cursive; font-size:24px; color:#7c8a71; font-weight:400; }
+.province-wall-journal textarea { width:100%; min-height:180px; flex:1; resize:none; font-family:'KaiTi','STKaiti','楷体',cursive; font-size:20px; line-height:32px; background:repeating-linear-gradient(transparent 0 31px,#cdd4bc66 31px 32px); color:#6f7862; }
+.province-wall-journal textarea::placeholder,.wall-card-back textarea::placeholder { color:#b2b49d; }
+.province-wall-journal>span { font-size:10px; color:#9eaa90; }
+.wall-landmark-list { display:flex; flex-direction:column; gap:8px; padding-top:12px; border-top:1px dashed #c9cdb4; }
+.wall-landmark-list>span { font-family:'KaiTi','STKaiti','楷体',cursive; font-size:16px; color:#a48a68; }
+.wall-landmark-list small { font-size:9px; color:#aeb39b; line-height:1.6; }
+.wall-save-error { font-size:11px; color:#ac6e5c; line-height:1.7; }
+.wall-save-error button { margin-left:8px; text-decoration:underline; }
+.wall-photo-focus { position:absolute; inset:0; z-index:8; display:flex; align-items:center; justify-content:center; background:#edeedea8; backdrop-filter:blur(6px); }
+.wall-focus-image { position:relative; transform-origin:0 0; background:#fffdf4; border:8px solid #fffdf4; border-radius:3px; box-shadow:0 15px 70px #495b4938; max-height:80%; }
+.wall-focus-image img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:block; }
+.wall-focus-image img+img { transition:opacity 180ms ease; }
+.wall-focus-close { position:absolute; right:28px; top:22px; font-size:30px; color:#64745a; z-index:2; }
+@media(max-width:1000px) { .province-wall-journal { flex-basis:210px; padding:16px; }.province-wall-header { padding:16px 22px; }.province-wall-header h1 { font-size:26px; }.province-wall-header p { max-width:350px; line-height:1.7; } }
+@media(prefers-reduced-motion:reduce) { .wall-card-flipper { transition-duration:1ms; } }
+
+.wall-hemp-fiber { fill:none; stroke:#e4cba0; stroke-width:1.05; stroke-linecap:round; opacity:.9; }
+.wall-hemp-shadow { stroke:#725639; stroke-width:.7; opacity:.7; }
+
+.wall-camera-space { position:absolute; inset:0; pointer-events:none; }
+.province-wall-board { pointer-events:auto; }
+.province-wall-viewport.is-panning,.province-wall-viewport.is-panning * { cursor:grabbing!important; }
+.wall-card-front { transform:rotateY(0deg); pointer-events:auto; }
+.wall-card-back { pointer-events:none; padding-bottom:27px; }
+.wall-card-flipper.is-flipped .wall-card-front { pointer-events:none; }
+.wall-card-flipper.is-flipped .wall-card-back { pointer-events:auto; }
+.wall-card-flip-toggle { position:absolute; right:3px; bottom:1px; z-index:5; min-width:48px; height:25px; font-size:12px; border-radius:3px; background:#fffcf0; color:#857052; }
+.wall-card-flip-toggle:hover { background:#eadcba; }
+.wall-card-front footer { padding-right:52px; }
+
+.wall-card-front,.wall-card-back { transition:transform 700ms cubic-bezier(.3,.65,.2,1); }
+.wall-card-flipper.is-flipped .wall-card-front { transform:rotateY(180deg); }
+.wall-card-flipper.is-flipped .wall-card-back { transform:rotateY(0deg); }
+
+.wall-tether { opacity:0;transition:opacity 240ms ease;stroke-width:1.2; }
+.wall-tether.is-highlighted { opacity:.8; }
+.wall-landmark-leader { fill:none;stroke:#9b947b;stroke-width:1;stroke-dasharray:2 5;opacity:.45; }
+.wall-thread { stroke-width:2.8;opacity:.65; }
+.wall-hemp-fiber { stroke-width:.8;opacity:.7; }
+.wall-hemp-shadow { stroke-width:.55;opacity:.5; }
+.wall-landmark text { font-size:17px; }
+
+.wall-landmark-list>button { text-align:left;font-family:'KaiTi','STKaiti','楷体',cursive;font-size:16px;color:#92774f;padding:4px 0; }
+.wall-landmark-list>button:hover { color:#5d7055; }
+
+.province-wall-card { transform-origin:center;touch-action:none;user-select:none; }
+.province-wall-card textarea { user-select:text; }
+.wall-card-image { cursor:grab; }
+.province-wall-card.is-photo-dragging { z-index:6;cursor:grabbing; }
+.province-wall-card.is-photo-dragging .wall-card-image { cursor:grabbing; }
+.province-wall-card.is-photo-dragging .wall-card-front,.province-wall-card.is-photo-dragging .wall-card-back { box-shadow:0 12px 25px #37472d45; }
+.province-wall-card.is-invalid-placement .wall-card-front,.province-wall-card.is-invalid-placement .wall-card-back { outline:2px solid #c59a68; }
+.wall-card-resize { position:absolute;left:-8px;bottom:-8px;width:22px;height:22px;z-index:6;border-radius:50%;border:1px solid #bfc6aa;background:#fff9e9;cursor:nesw-resize;opacity:0;transition:opacity 150ms;box-shadow:0 2px 5px #46543b28;font-size:15px; }
+.province-wall-card:hover .wall-card-resize,.province-wall-card:focus-within .wall-card-resize,.province-wall-card.is-photo-dragging .wall-card-resize { opacity:1; }
+.province-wall-card.is-resizing::after { content:var(--photo-size);position:absolute;left:50%;top:-27px;transform:translateX(-50%);background:#fff9e9;color:#657054;border:1px solid #bbc7a5;border-radius:8px;padding:3px 8px;font-size:11px;pointer-events:none; }

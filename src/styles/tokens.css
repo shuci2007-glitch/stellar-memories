@@ -1,0 +1,42 @@
+/* 《星辰相册》设计令牌 */
+:root {
+  --bg-0: #06070a;
+  --bg-1: #08090d;
+  --bg-2: #0b0d12;
+  --bg-3: #10131a;
+
+  --tx-1: rgba(235, 238, 248, 0.92);
+  --tx-2: rgba(200, 208, 226, 0.62);
+  --tx-3: rgba(180, 190, 214, 0.34);
+
+  --ac-1: #9db4d8;
+  --ac-2: #b7a9d6;
+  --danger: #c98a8a;
+
+  --line-1: rgba(255, 255, 255, 0.08);
+  --line-2: rgba(255, 255, 255, 0.14);
+
+  --glass: rgba(14, 17, 26, 0.55);
+  --glass-blur: 18px;
+
+  --r-s: 8px;
+  --r-m: 14px;
+  --r-l: 22px;
+  --r-pill: 999px;
+
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 32px; --s-7: 48px; --s-8: 64px;
+
+  --f-xs: 12px; --f-s: 13px; --f-m: 15px; --f-l: 18px;
+  --f-xl: 24px; --f-2xl: 32px; --f-display: 42px;
+
+  --d-hover: 160ms;
+  --d-ui: 260ms;
+  --d-camera: 800ms;
+  --e-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --e-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --e-spring: cubic-bezier(0.34, 1.4, 0.44, 1);
+
+  --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+    "Microsoft YaHei", "PingFang SC", sans-serif;
+}
