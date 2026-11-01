@@ -28,3 +28,7 @@ scripts/terrain-cache/
 .local-reference-excluded/
 scripts/.tmp-spaces.mjs
 scripts/glsl-check.js
+
+# HEIC 解码库(DLL)体积约 28MB,移出版本控制以缩小仓库;
+# 构建时仍需要,文件保留在本地 src-tauri/vendor/heif/(已被 filter-branch 从历史剔除)
+src-tauri/vendor/heif/
