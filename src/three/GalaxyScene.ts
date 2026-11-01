@@ -1,4 +1,6 @@
 import { albumGalaxyConfig } from "../core/types";
+import { DEFAULT_SHAPE, shapeOf } from "../core/spaces";
+import { buildBody, disposeBody, isBodyKind, type BodyHandle, type BodyKind } from "./SpaceBody";
 import { SpherePhotoBridge, setSpherePhotoBridge, getSpherePhotoBridge, clearSpherePhotoBridge } from "./SpherePhotoBridge";
 import { prewarmDetailPhoto } from "./DetailPhotoResources";
 import * as THREE from "three";
@@ -122,6 +124,8 @@ export class GalaxyScene {
   private labelContainer: HTMLDivElement | null = null;
 
   private photos: GalaxyPhoto[] = [];
+  /** 最近一次 setData 的入参:切页面形态时用它原地重建 */
+  private lastData: [GalaxyPhoto[], Album[], Connection[]] | null = null;
   private indexById = new Map<number, number>();
   private clusters: Cluster[] = [];
   private clusterByAlbum = new Map<number, Cluster>();
@@ -185,6 +189,10 @@ export class GalaxyScene {
   private galaxyDragLast = { x: 0, y: 0 };
   private universeSpin = new THREE.Quaternion();
   private galaxyBaseQuaternion = new THREE.Quaternion();
+  /** 空闲自转:只作用于点云图形与体积星云,不影响照片星系 */
+  private shapeSpin = new THREE.Quaternion();
+  /** universeSpin × shapeSpin,给点云图形用 */
+  private combinedSpin = new THREE.Quaternion();
 
   // ---------- 旅程系统:同一宇宙内的连续镜头 ----------
   private journey = new JourneyController();
@@ -233,6 +241,30 @@ export class GalaxyScene {
   private cardMat: THREE.MeshBasicMaterial;
   /** 只有宇宙是当前页面时,场景才响应键盘与指针语义 */
   private active = true;
+  /** 帧率上限(毫秒/帧),0 = 不限。桌面壁纸常驻渲染时需要让出 GPU。 */
+  private minFrameMs = 0;
+  private lastFrameTs = 0;
+  /** 当前页面形态;默认旋臂走原本的 Astra 布局 */
+  private shapeId = DEFAULT_SHAPE;
+  /** Astra 参考银河的显隐(0..1)。只有「旋臂星系」用它,其它形态收起来让位给星野自己成形。 */
+  private galaxyFade = 1;
+  private galaxyFadeTarget = 1;
+
+  /** 形态星尘:照片稀少时用暗淡点云勾勒页面形态，否则选了什么图形都看不出来 */
+  private shapeDust:
+    | { points: THREE.Points; geom: THREE.BufferGeometry; mat: THREE.PointsMaterial }
+    | null = null;
+  private dustShapeId: string | null = null;
+  /** 背景照片的呈现:plate 半透明图板 / nebula 整页粒子 */
+  private backdropKey = "";
+  private backdropUrl: string | null = null;
+  private backdropStrength = 42;
+  private backdropMesh: THREE.Mesh | null = null;
+  private backdropTexture: THREE.Texture | null = null;
+  /** 页面主视觉天体（环带行星 / 金色光环 / 粒子星云） */
+  private body: BodyHandle | null = null;
+  /** 当前挂的是哪个天体;切换图形时据此判断要不要真的重建 */
+  private bodyKind: BodyKind | null = null;
 
   constructor(events: GalaxySceneEvents = {}) {
     this.events = events;
@@ -275,6 +307,31 @@ export class GalaxyScene {
         entry.sphere.points.quaternion.copy(this.rig.camera.quaternion);
       }
     }
+  }
+
+  /**
+   * 每帧推进图形自旋。
+   *
+   * 两路自旋分开:
+   *  - universeSpin:拖动产生的,只作用于星系和照片星(保持原行为,照片不会被自动转走);
+   *  - shapeSpin:空闲时的极慢自转,只作用于点云图形(球状/环状等)和体积星云,
+   *    这样每个图形看上去都会自己在转。
+   */
+  private tickUniverseSpin(dt: number) {
+    const axis = new THREE.Vector3(0.16, 1, 0.07).normalize();
+    this.shapeSpin
+      .premultiply(new THREE.Quaternion().setFromAxisAngle(axis, dt * 0.05))
+      .normalize();
+    this.combinedSpin.copy(this.universeSpin).multiply(this.shapeSpin);
+    this.starfield.setSpin(this.combinedSpin);
+    // 旋臂星系用 galaxy.points 当主体,星野保持稳定(和原设计一致)
+    const spinShape = this.shapeId !== "spiral";
+    this.starfield.setSpinEnabled(spinShape);
+    // 形态星尘是独立点云,得跟图形一起转,否则轮廓和点云会对不上
+    if (spinShape && this.shapeDust) this.shapeDust.points.quaternion.copy(this.combinedSpin);
+    // 天体(环带行星/金色光环/莫比乌斯环/流动绸带…)整体跟随自旋:
+    // 拖动时整个星球被带动,而不只是粒子在转。
+    if (this.body) this.body.group.quaternion.copy(this.combinedSpin);
   }
 
   // ---------- 生命周期 ----------
@@ -882,6 +939,8 @@ export class GalaxyScene {
     this.rig = new CameraRig(canvas.clientWidth / Math.max(1, canvas.clientHeight), canvas);
     this.rig.controls.enabled = false; // 锁定态:散星不可拖动
     this.starfield = new Starfield();
+
+    this.applyShapeLook();
     this.backdrop = new AstraWatercolorBackdrop();
     // 172/8 保持正式场景既有世界尺度，同时保留官网 camera=8 时的屏幕构图。
     this.galaxy = new AstraReferenceGalaxy(Math.min(window.devicePixelRatio,2),21.5);
@@ -1012,6 +1071,7 @@ export class GalaxyScene {
   setData(photos: GalaxyPhoto[], albums: Album[], connections: Connection[]) {
     // 名称和展示配置保存后复用正在显示的球，不重新生成场景。
     const signature = JSON.stringify([photos, [...albums].sort((a,b)=>a.id-b.id).map(a=>[a.id,a.photoIds]), connections]);
+    this.lastData = [photos, albums, connections];
     const preserveAlbumDraft=this.albumCommitPending;
     this.albumCommitPending=false;
     if (signature === this.sceneDataSignature) {
@@ -1271,6 +1331,8 @@ export class GalaxyScene {
       anchorArr[i * 3] = n.x; anchorArr[i * 3 + 1] = n.y; anchorArr[i * 3 + 2] = n.z;
     }
     this.positions = anchorArr;
+    // 非默认形态:用页面注册表给的三维布局覆盖旋臂坐标
+    if (this.shapeId !== DEFAULT_SHAPE) this.relayoutPositions();
     this.applyPositions();
 
     // --- 相册标签 DOM(名称 + 记忆数量) ---
@@ -1462,12 +1524,252 @@ export class GalaxyScene {
     if (this.running) return;
     this.running = true;
     this.clock.start();
-    const loop = () => {
+    const loop = (now: number) => {
       if (!this.running) return;
       this.raf = requestAnimationFrame(loop);
+      // 跳帧而不是缩小 dt:clock 仍按真实时间推进,动画速度不变。
+      if (this.minFrameMs > 0 && now - this.lastFrameTs < this.minFrameMs) return;
+      this.lastFrameTs = now;
       this.frame();
     };
     this.raf = requestAnimationFrame(loop);
+  }
+
+  /** 限制渲染帧率(0 或负数表示不限)。桌面壁纸模式下用 30fps 换取常驻时的 GPU 占用。 */
+  setMaxFps(fps: number) {
+    this.minFrameMs = fps > 0 ? 1000 / fps : 0;
+  }
+
+  /** 切换页面形态。默认旋臂沿用原有 Astra 布局,其他形态按注册表的 layout 重排。 */
+  setShape(id: string) {
+    if (this.shapeId === id) {
+      // 首次挂载时 shapeId 已经是默认值，这里补建一次形态星尘
+      this.syncShapeDust();
+      this.applyShapeLook();
+      return;
+    }
+    this.shapeId = id;
+    this.syncBody();
+    this.syncShapeDust();
+    this.applyShapeLook();
+    if (this.lastData) {
+      // 照片集合可能没变,必须强制重建一次才能把布局换掉
+      this.sceneDataSignature = "";
+      const [photos, albums, connections] = this.lastData;
+      this.setData(photos, albums, connections);
+    }
+  }
+
+  /**
+   * 图形决定整个画面的「光点」怎么排,而不只是换了个背景:
+   *  - 旋臂星系:沿用 Astra 参考银河(它本身就是旋臂),星野保持原样;
+   *  - 其它形态:收掉参考银河,把星野重排成该形态。
+   * 之前只重排了照片节点,而满屏主导视觉是固定的旋臂星点,所以看起来什么都没变。
+   */
+  private applyShapeLook() {
+    const shape = shapeOf(this.shapeId);
+    if (shape.id === "spiral") {
+      this.starfield?.applyShape(null);
+      this.starfield?.setLook(null, 1);
+      this.galaxyFadeTarget = 1;
+      return;
+    }
+    this.starfield?.applyShape(shape.layout);
+    // 球状星云做成贾维斯那种蓝色全息球:整片星点统一冷蓝并提亮,
+    // 外面再裹一层真正的 3D 体积星云(会旋转、随时间翻卷)。
+    if (shape.id === "sphere") {
+      this.starfield?.setLook(new THREE.Color("#3fa6ff"), 1.35, 0.92);
+    } else {
+      this.starfield?.setLook(null, 1);
+    }
+    this.galaxyFadeTarget = 0;
+  }
+
+  /** 有主视觉天体的形态挂对应天体,其余撤掉 */
+  private syncBody() {
+    const kind = isBodyKind(this.shapeId) ? this.shapeId : null;
+    // 只在「目标天体确实就是当前这个」时才跳过重建。
+    // 原判断 `(kind === null) === (this.body === null)` 只比了"有没有"而没比"是哪一个",
+    // 于是 环带行星 → 金色光环 → 粒子星云 互相切换时会直接 return,画面纹丝不动。
+    if (this.bodyKind === kind) return;
+    if (this.body) {
+      // dispose 只释放资源、清空子节点,不会自动从场景里摘掉,得手动 remove。
+      this.scene.remove(this.body.group);
+      disposeBody(this.body);
+    }
+    this.body = null;
+    this.bodyKind = null;
+    if (kind) {
+      this.body = buildBody(kind);
+      this.bodyKind = kind;
+      this.scene.add(this.body.group);
+    }
+  }
+
+  /**
+   * 形态星尘：同一个 layout 采样出一层暗淡点云。
+   * 有独立天体的形态（环带行星/金色光环/粒子星云）不需要它；
+   * 其余形态在没有照片时会完全空白，有了这层才能看出"选了哪个图形"。
+   */
+  private syncShapeDust() {
+    if (isBodyKind(this.shapeId)) {
+      this.disposeShapeDust();
+      return;
+    }
+    if (this.dustShapeId === this.shapeId && this.shapeDust) return;
+
+    this.disposeShapeDust();
+
+    const COUNT = 2600;
+    const positions = new Float32Array(COUNT * 3);
+    const layout = shapeOf(this.shapeId).layout;
+    const rnd = (n: number) => {
+      const x = Math.sin(n * 12.9898 + 4.1414) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    for (let i = 0; i < COUNT; i++) {
+      const p = layout(i, COUNT);
+      positions[i * 3] = p.x + (rnd(i * 3) - 0.5) * 2.6;
+      positions[i * 3 + 1] = p.y + (rnd(i * 3 + 1) - 0.5) * 2.6;
+      positions[i * 3 + 2] = p.z + (rnd(i * 3 + 2) - 0.5) * 2.6;
+    }
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const isGlobe = this.shapeId === "sphere";
+    const mat = new THREE.PointsMaterial({
+      size: isGlobe ? 0.85 : 0.62,
+      color: new THREE.Color(isGlobe ? 0x4fb0ff : 0x8fb4ff),
+      transparent: true,
+      opacity: isGlobe ? 0.5 : 0.3,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+    });
+    const points = new THREE.Points(geom, mat);
+    points.frustumCulled = false;
+    points.renderOrder = -1;
+    this.scene.add(points);
+
+    this.shapeDust = { points, geom, mat };
+    this.dustShapeId = this.shapeId;
+  }
+
+  private disposeShapeDust() {
+    if (!this.shapeDust) return;
+    this.scene.remove(this.shapeDust.points);
+    this.shapeDust.geom.dispose();
+    this.shapeDust.mat.dispose();
+    this.shapeDust = null;
+    this.dustShapeId = null;
+  }
+
+  /** 只重写坐标数组,不重建粒子 */
+  private relayoutPositions() {
+    if (!this.positions?.length) return;
+    const total = this.positions.length / 3;
+    const layout = shapeOf(this.shapeId).layout;
+    for (let i = 0; i < total; i++) {
+      const p = layout(i, total);
+      this.positions[i * 3] = p.x;
+      this.positions[i * 3 + 1] = p.y;
+      this.positions[i * 3 + 2] = p.z;
+    }
+  }
+
+  /**
+   * 把用户选的某张照片铺成页面背景。
+   * 原图半透明垫在星系后方。strength 是 0-100 的存在感,只改强度时不会重新下载纹理。
+   */
+  setBackdrop(url: string | null, strength = 42) {
+    const nextStrength = Math.max(0, Math.min(100, strength));
+    const key = `${url ?? ""}|${nextStrength}`;
+    if (key === this.backdropKey) return;
+
+    const urlChanged = this.backdropUrl !== url;
+    this.backdropKey = key;
+    this.backdropStrength = nextStrength;
+
+    // 拖强度滑块时只改材质透明度,不重新采样图像
+    const hasVisual = !!this.backdropMesh;
+    if (url && !urlChanged && this.backdropTexture && (hasVisual || nextStrength === 0)) {
+      this.applyBackdropOpacity();
+      return;
+    }
+
+    this.clearBackdropVisual();
+
+    if (!url) {
+      this.backdropUrl = null;
+      this.disposeBackdropTexture();
+      return;
+    }
+    if (!urlChanged && this.backdropTexture) {
+      this.buildBackdrop();
+      return;
+    }
+    this.backdropUrl = url;
+    this.disposeBackdropTexture();
+    new THREE.TextureLoader().load(url, (tex) => {
+      // 加载期间用户可能已经换页
+      if (this.backdropUrl !== url) {
+        tex.dispose();
+        return;
+      }
+      tex.colorSpace = THREE.SRGBColorSpace;
+      this.backdropTexture = tex;
+      this.buildBackdrop();
+    });
+  }
+
+  private applyBackdropOpacity() {
+    const alpha = this.backdropStrength / 100;
+    if (this.backdropMesh) {
+      (this.backdropMesh.material as THREE.MeshBasicMaterial).opacity = alpha;
+    }
+  }
+
+  private disposeBackdropTexture() {
+    if (this.backdropTexture) {
+      this.backdropTexture.dispose();
+      this.backdropTexture = null;
+    }
+  }
+
+  private clearBackdropVisual() {
+    if (this.backdropMesh) {
+      this.scene.remove(this.backdropMesh);
+      this.backdropMesh.geometry.dispose();
+      (this.backdropMesh.material as THREE.Material).dispose();
+      this.backdropMesh = null;
+    }
+  }
+
+  private buildBackdrop() {
+    const tex = this.backdropTexture;
+    if (!tex) return;
+    const alpha = this.backdropStrength / 100;
+    if (alpha <= 0) return;
+
+    const image = tex.image as { width?: number; height?: number } | null;
+    const w = image?.width ?? 1600;
+    const h = image?.height ?? 1000;
+    const aspect = h > 0 ? w / h : 1.6;
+    const height = 420;
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(height * aspect, height),
+      new THREE.MeshBasicMaterial({
+        map: tex,
+        transparent: true,
+        opacity: alpha,
+        depthWrite: false,
+        fog: false,
+      }),
+    );
+    mesh.position.set(0, 0, -330);
+    mesh.renderOrder = -10;
+    this.backdropMesh = mesh;
+    this.scene.add(mesh);
   }
 
   stop() {
@@ -1477,6 +1779,10 @@ export class GalaxyScene {
 
   dispose() {
     this.stop();
+    disposeBody(this.body);
+    this.body = null;
+    this.clearBackdropVisual();
+    this.disposeBackdropTexture();
     this.clearPhotoSettle();
     this.disposePhotoCloud();
     this.journey.cancel();
@@ -2160,6 +2466,8 @@ export class GalaxyScene {
   private frame() {
     const dt = Math.min(0.05, this.clock.getDelta());
     this.time += dt;
+    // 主视觉天体：环面纹理流动 + 缓慢自转
+    this.body?.tick(dt, this.rig.camera);
 
     // FPS 统计
     this.fpsAcc += dt;
@@ -2198,6 +2506,9 @@ export class GalaxyScene {
     // 星野视差(极轻)
     this.starfield.setPointerEnabled(true);
     this.starfield.setGentleInteraction(this.universe!=='locked');
+    // 所有图形(星系 / 点云形态 / 照片星)跟随宇宙自旋;空闲时也缓慢自转,保持"活着"的动态。
+    this.tickUniverseSpin(dt);
+    this.starfield.setSpin(this.universeSpin);
     this.starfield.update(dt, this.time, this.rig.camera);
     this.starfield.setOpacity((journeyDestination === "earth" || this.place === "earth") ? Math.max(c.stars, 0.78) : c.stars);
     this.backdrop.update(this.time);
@@ -2217,8 +2528,13 @@ export class GalaxyScene {
     if (this.nodeMat) this.nodeMat.uniforms.uOpacity.value = c.nodes * mainGalaxyVisibility * this.photoBackdrop;
     if (this.lineMat) this.lineMat.uniforms.uGlobal.value = 0;
 
+    // 非旋臂形态:渐隐 Astra 参考银河,把画面主视觉让给按图形重排后的星野
+    this.galaxyFade += (this.galaxyFadeTarget - this.galaxyFade) * Math.min(1, dt * 2.2);
+    if (Math.abs(this.galaxyFadeTarget - this.galaxyFade) < 0.002) this.galaxyFade = this.galaxyFadeTarget;
+    this.galaxy.points.visible = this.galaxyFade > 0.02;
+
     // 星尘本身以 stars 通道取亮度:锁定散开态可见,聚焦时压暗
-    this.galaxy.tick(dt,this.renderer,this.rig.camera,this.rig.camera.aspect,c.stars * mainGalaxyVisibility,this.galaxyBaseQuaternion);
+    this.galaxy.tick(dt,this.renderer,this.rig.camera,this.rig.camera.aspect,c.stars * mainGalaxyVisibility * this.galaxyFade,this.galaxyBaseQuaternion);
     if (this.universe === "converging" && this.galaxy.converge > 0.985) {
       this.universe = "ready"; // 就绪由真实动画进度宣布,而不是 UI 定时器
       this.events.onEnterComplete?.();

@@ -35,7 +35,7 @@ pub struct ImportControl {
 fn collect_files(root: &Path, out: &mut Vec<ScanFile>) {
     // 单文件直接入队(支持拖入单张照片)
     if root.is_file() {
-        if thumbs::is_supported(root) {
+        if thumbs::is_supported(root) || thumbs::is_video(root) || thumbs::heic_accepted(root) {
             out.push(ScanFile { path: root.to_string_lossy().into_owned(), unsupported: false });
         } else if thumbs::is_known_unsupported(root) {
             out.push(ScanFile { path: root.to_string_lossy().into_owned(), unsupported: true });
@@ -47,7 +47,7 @@ fn collect_files(root: &Path, out: &mut Vec<ScanFile>) {
         let p = entry.path();
         if p.is_dir() {
             collect_files(&p, out);
-        } else if thumbs::is_supported(&p) {
+        } else if thumbs::is_supported(&p) || thumbs::is_video(&p) || thumbs::heic_accepted(&p) {
             out.push(ScanFile { path: p.to_string_lossy().into_owned(), unsupported: false });
         } else if thumbs::is_known_unsupported(&p) {
             out.push(ScanFile { path: p.to_string_lossy().into_owned(), unsupported: true });
@@ -93,7 +93,7 @@ fn run_import(
     roots: Vec<String>,
     control: Arc<ImportControl>,
     job_id: i64,
-    _album_name: Option<String>,
+    album_name: Option<String>,
     quality: String,
 ) -> Result<(), String> {
     // 1. 扫描
@@ -122,6 +122,8 @@ fn run_import(
         path: String,
     }
     let mut pending: Vec<Pending> = Vec::new();
+    // 本次导入里落库的视频(含实况照片的动态片段),用于后面的实况配对。
+    let mut video_ids: Vec<i64> = Vec::new();
     {
         let conn = db.0.lock();
         for f in &files {
@@ -129,11 +131,16 @@ fn run_import(
                 *skipped_unsupported.lock() += 1;
                 continue;
             }
+            let path = Path::new(&f.path);
+            let is_video = thumbs::is_video(path);
             let exists: bool = conn
                 .query_row("SELECT 1 FROM photos WHERE path = ?1", [&f.path], |_| Ok(true))
                 .unwrap_or(false);
             if exists {
                 // 若上次中断(imported=0)则复用该行
+                if is_video {
+                    continue;
+                }
                 let incomplete: Option<i64> = conn
                     .query_row(
                         "SELECT id FROM photos WHERE path = ?1 AND imported = 0",
@@ -150,15 +157,56 @@ fn run_import(
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            let kind = if is_video { "video" } else { "photo" };
             if conn
                 .execute(
-                    "INSERT INTO photos(path, filename) VALUES(?1, ?2)",
-                    rusqlite::params![f.path, filename],
+                    "INSERT INTO photos(path, filename, kind, processed) VALUES(?1, ?2, ?3, 0)",
+                    rusqlite::params![f.path, filename, kind],
                 )
                 .is_ok()
             {
-                pending.push(Pending { id: conn.last_insert_rowid(), path: f.path.clone() });
+                let id = conn.last_insert_rowid();
+                if is_video {
+                    // 视频不解码:入库即可见,封面由前端截帧回写。
+                    video_ids.push(id);
+                    let date = std::fs::metadata(&f.path)
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .map(|t| {
+                            let dt: chrono::DateTime<chrono::Local> = t.into();
+                            dt.format("%Y-%m-%d %H:%M:%S").to_string()
+                        });
+                    conn.execute(
+                        "UPDATE photos SET imported=1, processed=0, capture_date=?1, date_source='file' WHERE id=?2",
+                        rusqlite::params![date, id],
+                    )
+                    .ok();
+                } else {
+                    pending.push(Pending { id, path: f.path.clone() });
+                }
             }
+        }
+    }
+
+    // 分批:只把前 N 张做完整预处理(EXIF + 缩略图 + 粒子),其余先入库占位,
+    // 由后台按空闲节奏补处理,避免一次导入几千张时内存爆掉。
+    let limit: usize = {
+        let conn = db.0.lock();
+        crate::db::get_setting(&conn, "import_batch_limit")
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(40)
+    };
+    let head_len = limit.min(pending.len());
+    let tail: Vec<Pending> = pending.split_off(head_len);
+    if !tail.is_empty() {
+        let conn = db.0.lock();
+        for item in &tail {
+            conn.execute(
+                "UPDATE photos SET imported=1, processed=0 WHERE id=?1",
+                [item.id],
+            )
+            .ok();
         }
     }
 
@@ -187,7 +235,7 @@ fn run_import(
                 }
                 let path = PathBuf::from(&item.path);
                 let info = read_exif(&path);
-                let img = match thumbs::load_oriented(&path, info.orientation) {
+                let img = match thumbs::decode_image(&path, info.orientation) {
                     Ok(i) => i,
                     Err(_) => {
                         *skipped_err.lock() += 1;
@@ -310,14 +358,45 @@ fn run_import(
                 SELECT ap.photo_id FROM album_photos ap
                 JOIN photos p ON p.id = ap.photo_id
                 WHERE ap.album_id = albums.id AND p.imported = 1
+                  AND p.id NOT IN (SELECT live_video_id FROM photos WHERE live_video_id IS NOT NULL)
                 ORDER BY p.score DESC LIMIT 1
             ) WHERE cover_photo_id IS NULL"#,
             [],
         )
         .ok();
+        // 指定了相册名(手机上传):同名的相册直接并入,避免每次上传多出一个空星系。
+        // 按批投递而不是按目录,所以不会触发上面「一个文件夹一个星系」的逻辑。
+        if let Some(name) = album_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            if !new_ids.is_empty() {
+                let existing: Option<i64> = conn
+                    .query_row("SELECT id FROM albums WHERE name=?1 AND auto=0 ORDER BY id LIMIT 1", [name], |r| r.get(0))
+                    .ok();
+                let album_id = match existing {
+                    Some(id) => id,
+                    None => {
+                        conn.execute("INSERT INTO albums(name, auto) VALUES(?1, 0)", [name]).map_err(|e| e.to_string())?;
+                        conn.last_insert_rowid()
+                    }
+                };
+                for id in &new_ids {
+                    conn.execute("INSERT OR IGNORE INTO album_photos(album_id, photo_id) VALUES(?1, ?2)", rusqlite::params![album_id, id]).ok();
+                }
+                conn.execute(
+                    "UPDATE albums SET cover_photo_id=(SELECT p.id FROM album_photos ap JOIN photos p ON p.id=ap.photo_id WHERE ap.album_id=?1 AND p.imported=1 AND p.missing=0 AND p.id NOT IN (SELECT live_video_id FROM photos WHERE live_video_id IS NOT NULL) ORDER BY p.score DESC,p.id LIMIT 1) WHERE id=?1 AND (cover_photo_id IS NULL OR NOT EXISTS(SELECT 1 FROM photos p2 JOIN album_photos ap2 ON ap2.photo_id=p2.id WHERE ap2.album_id=?1 AND p2.id=albums.cover_photo_id))",
+                    [album_id],
+                ).ok();
+            }
+        }
     }
 
     build_auto_connections(&db, &new_ids);
+
+    // 实况照片配对:静帧(photo)+ 同主名的动态(mov/video) → 在静帧上可播放。
+    // 只在同一批导入涉及的「主名」范围内做,避免全库扫描,也避免误配同名普通视频。
+    pair_live_photos(&db, &new_ids, &video_ids);
+
+    // 导入结束立刻把剩下的交给后台慢慢补,用户在别的页面时它也在跑。
+    crate::backfill::schedule(app.clone(), db.clone(), data_dir.clone(), quality.clone());
 
     let conn = db.0.lock();
     conn.execute(
@@ -331,6 +410,32 @@ fn run_import(
         skipped: *skipped_unsupported.lock() + *skipped_err.lock(), current: String::new(),
     });
     Ok(())
+}
+
+/// 同步导入一组文件路径并归入指定相册名。
+/// 复用与 UI 导入完全相同的管线(含缩略图、粒子、关系),只是同步阻塞直到完成,
+/// 供「单个相册导入」在一条命令内完成导入 + 重映射。
+pub fn import_album_paths(
+    app: AppHandle,
+    db: Db,
+    data_dir: PathBuf,
+    paths: Vec<String>,
+    album_name: Option<String>,
+    quality: String,
+) -> Result<(), String> {
+    let job_id = {
+        let conn = db.0.lock();
+        conn.execute(
+            "INSERT INTO import_jobs(root_path, state) VALUES(?1, 'running')",
+            [paths.join("|")],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.last_insert_rowid()
+    };
+    let control = Arc::new(ImportControl {
+        cancel: AtomicBool::new(false),
+    });
+    run_import(app, db, data_dir, paths, control, job_id, album_name, quality)
 }
 
 /// 自动关系:同日 1.0 / ±2 日 0.6 / 同月 0.3;同相册 +0.2;每节点最多 6 条。
@@ -417,6 +522,71 @@ pub fn build_auto_connections(db: &Db, photo_ids: &[i64]) {
                 rusqlite::params![a, b, s],
             )
             .ok();
+        }
+    }
+}
+
+/// 主名(扩展名之前的部分,忽略大小写)。实况照片 = 静帧 `IMG_1234.JPG` + 动态 `IMG_1234.MOV`,
+/// 二者主名相同,靠它把两张记录绑成「一张可播放的实况」。
+fn stem_of(filename: &str) -> String {
+    let lower = filename.to_ascii_lowercase();
+    match lower.rfind('.') {
+        Some(i) if i > 0 => lower[..i].to_string(),
+        _ => lower,
+    }
+}
+
+/// 实况照片配对:把同主名的静帧(photo)指向其动态(mov/video)。
+/// 只在本批导入涉及的主名范围内匹配,既避免全库扫描,也避免误把同名普通视频配成实况。
+/// 跨批次也能生效:例如这次只传了 .mov,而静帧是上次导入的,只要主名一致就会配对上。
+fn pair_live_photos(db: &Db, photo_ids: &[i64], video_ids: &[i64]) {
+    if photo_ids.is_empty() && video_ids.is_empty() {
+        return;
+    }
+    let conn = db.0.lock();
+    let mut stems: Vec<String> = Vec::new();
+    for id in photo_ids.iter().chain(video_ids.iter()) {
+        if let Ok(name) = conn.query_row("SELECT filename FROM photos WHERE id=?1", [id], |r| r.get::<_, String>(0)) {
+            let s = stem_of(&name);
+            if !stems.contains(&s) {
+                stems.push(s);
+            }
+        }
+    }
+    if stems.is_empty() {
+        return;
+    }
+    let mut q = match conn.prepare(
+        "SELECT id, filename, kind FROM photos
+         WHERE (kind='photo' AND live_video_id IS NULL) OR kind='video'",
+    ) {
+        Ok(q) => q,
+        Err(_) => return,
+    };
+    let rows = match q.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let mut stills: Vec<(i64, String)> = Vec::new();
+    let mut vids: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for row in rows.flatten() {
+        let (id, filename, kind) = row;
+        let stem = stem_of(&filename);
+        if !stems.contains(&stem) {
+            continue;
+        }
+        if kind == "video" {
+            vids.entry(stem).or_insert(id); // 同主名取第一个视频作为动态片段
+        } else {
+            stills.push((id, stem));
+        }
+    }
+    drop(q);
+    for (sid, stem) in stills {
+        if let Some(&vid) = vids.get(&stem) {
+            if vid != sid {
+                conn.execute("UPDATE photos SET live_video_id=?1 WHERE id=?2", [vid, sid]).ok();
+            }
         }
     }
 }

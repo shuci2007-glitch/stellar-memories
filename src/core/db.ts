@@ -14,6 +14,68 @@ export const ipc = {
   winToggleMaximize: () => invoke("win_toggle_maximize"),
   winClose: () => invoke("win_close"),
 
+  // 桌面壁纸
+  startWallpaper: () => invoke<number>("start_wallpaper"),
+  stopWallpaper: () => invoke("stop_wallpaper"),
+  wallpaperRunning: () => invoke<boolean>("wallpaper_running"),
+
+  // 页面(空间)
+  listSpaces: () =>
+    invoke<import("./spaces").Space[]>("list_spaces"),
+  createSpace: (name: string, shape: string, scope: string) =>
+    invoke<number>("create_space", { name, shape, scope }),
+  saveSpace: (
+    id: number,
+    name: string,
+    shape: string,
+    scope: string,
+    backgroundPhotoId: number | null,
+    backgroundMode: string = "plate",
+    backgroundStrength: number = 42,
+    backgroundAsset: string | null = null,
+  ) =>
+    invoke("save_space", {
+      id,
+      name,
+      shape,
+      scope,
+      backgroundPhotoId,
+      backgroundMode,
+      backgroundStrength,
+      backgroundAsset,
+    }),
+  deleteSpace: (id: number) => invoke("delete_space", { id }),
+  addSpacePhotos: (spaceId: number, photoIds: number[]) =>
+    invoke("add_space_photos", { spaceId, photoIds }),
+  removeSpacePhotos: (spaceId: number, photoIds: number[]) =>
+    invoke("remove_space_photos", { spaceId, photoIds }),
+
+  // 后台补处理
+  backfillStatus: () =>
+    invoke<{ running: boolean; paused: boolean; done: number; pending: number }>(
+      "backfill_status",
+    ),
+  runBackfill: () => invoke("run_backfill"),
+  setBackfillPaused: (paused: boolean) => invoke("set_backfill_paused", { paused }),
+  saveVideoPoster: (id: number, bytes: number[]) =>
+    invoke("save_video_poster", { id, bytes }),
+
+  // 手机上传
+  startPhoneUpload: (targetDir: string) =>
+    invoke<{ url: string; qrSvg: string; port: number; target: string }>(
+      "start_phone_upload",
+      { targetDir },
+    ),
+  stopPhoneUpload: () => invoke<number>("stop_phone_upload"),
+  phoneUploadStatus: () =>
+    invoke<{
+      active: boolean;
+      count: number;
+      bytes: number;
+      lastName: string | null;
+      target: string;
+    } | null>("phone_upload_status"),
+
   // 认证
   authState: () =>
     invoke<{ hasPassword: boolean; passwordless: boolean; unlocked: boolean }>("auth_state"),
@@ -36,8 +98,8 @@ export const ipc = {
   cancelImport: () => invoke("cancel_import"),
 
   // 照片
-  listPhotos: (albumId?: number) =>
-    invoke<Photo[]>("list_photos", { albumId: albumId ?? null }),
+  listPhotos: (albumId?: number, spaceId?: number) =>
+    invoke<Photo[]>("list_photos", { albumId: albumId ?? null, spaceId: spaceId ?? null }),
   getPhotoFull: (id: number) =>
     invoke<{ photo: Photo; memory: Memory }>("get_photo_full", { id }),
   saveMemory: (
@@ -59,7 +121,8 @@ export const ipc = {
     ),
 
   // 时间轴/搜索
-  getTimeline: () => invoke<TimelineItem[]>("get_timeline"),
+  getTimeline: (spaceId?: number) =>
+    invoke<TimelineItem[]>("get_timeline", { spaceId: spaceId ?? null }),
   searchPhotos: (query: string) => invoke<Photo[]>("search_photos", { query }),
 
   // 相册
@@ -81,12 +144,25 @@ export const ipc = {
     invoke("remove_connection", { a, b }),
 
   // 银河
-  getGalaxyData: () => invoke<GalaxyPhoto[]>("get_galaxy_data"),
+  getGalaxyData: (spaceId?: number) =>
+    invoke<GalaxyPhoto[]>("get_galaxy_data", { spaceId: spaceId ?? null }),
 
   // 备份
   exportBackup: (target: string, includePhotos: boolean) =>
     invoke("export_backup_cmd", { target, includePhotos }),
   importBackup: (source: string) => invoke<number>("import_backup_cmd", { source }),
+
+  // 单个相册导出/导入(本地分享)
+  exportAlbum: (albumId: number, target: string) =>
+    invoke<{ folder: string; photoCount: number; skipped: number; name: string }>(
+      "export_album_cmd",
+      { albumId, target },
+    ),
+  importAlbum: (source: string) =>
+    invoke<{ albumId: number; name: string; photoCount: number; memoryCount: number }>(
+      "import_album_cmd",
+      { source },
+    ),
 };
 
 /** 本地文件 → 可显示 URL(用于原生 img) */

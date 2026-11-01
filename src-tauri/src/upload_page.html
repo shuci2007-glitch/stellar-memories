@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>星辰相册 · 手机上传</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100vh; padding: 28px 18px 40px;
+    background: radial-gradient(circle at 50% -10%, #16203a 0%, #090b12 45%, #06070a 100%);
+    color: rgba(235,238,248,.92);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  h1 { font-size: 18px; font-weight: 500; letter-spacing: .28em; margin: 0 0 6px; text-indent: .28em; }
+  .sub { font-size: 12px; color: rgba(235,238,248,.45); letter-spacing: .1em; margin-bottom: 26px; }
+  .card { width: 100%; max-width: 460px; background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 16px; padding: 18px; margin-bottom: 14px; }
+  .row { display: flex; gap: 10px; }
+  button {
+    flex: 1; appearance: none; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.06);
+    color: rgba(235,238,248,.92); font-size: 15px; padding: 14px 12px; border-radius: 12px;
+    font-family: inherit; cursor: pointer; transition: background .2s, border-color .2s;
+  }
+  button:active { background: rgba(255,255,255,.12); }
+  button.primary { background: linear-gradient(180deg, rgba(140,170,255,.28), rgba(110,140,230,.18));
+    border-color: rgba(150,180,255,.45); }
+  button:disabled { opacity: .45; }
+  .hint { font-size: 12px; line-height: 1.7; color: rgba(235,238,248,.42); }
+  .list { width: 100%; max-width: 460px; display: flex; flex-direction: column; gap: 8px; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px;
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06); font-size: 13px; }
+  .item img { width: 40px; height: 40px; object-fit: cover; border-radius: 8px; flex: none; background: #111; }
+  .item .thumb-video { width: 40px; height: 40px; flex: none; border-radius: 8px; background: #111;
+    display: flex; align-items: center; justify-content: center; color: #9fb4ff; font-size: 16px; }
+  .item .meta { flex: 1; min-width: 0; }
+  .item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,.1); margin-top: 6px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: rgba(150,180,255,.85); transition: width .15s; }
+  .item.err { border-color: rgba(255,120,120,.4); }
+  .item.err .name { color: #ff9b9b; }
+  .item .msg { font-size: 11px; color: #ff9b9b; margin-top: 3px; word-break: break-all; }
+  .total { font-size: 12px; color: rgba(235,238,248,.5); margin: 4px 0 12px; }
+  .done { text-align: center; font-size: 14px; color: rgba(160,200,255,.9); padding: 20px 0; }
+  .foot { margin-top: 22px; font-size: 11px; color: rgba(235,238,248,.3); text-align: center; line-height: 1.8; }
+</style>
+</head>
+<body>
+<h1>星辰相册</h1>
+<div class="sub">手机上传 · 同一 WiFi</div>
+
+<div class="card">
+  <div class="row">
+    <button id="pick" class="primary">选择照片</button>
+    <button id="shot">拍照上传</button>
+  </div>
+  <input id="file" type="file" accept="image/*,video/*" multiple hidden>
+  <input id="cam" type="file" accept="image/*" capture="environment" hidden>
+  <div id="total" class="total"></div>
+  <div id="hint" class="hint">照片、视频、实况照片都会直接存进电脑上你刚选的文件夹，只在局域网内传输，不经过任何服务器。实况照片请同时选中静帧与同名的 .mov 动态。</div>
+</div>
+
+<div id="list" class="list"></div>
+<div id="donetip" class="done" hidden>已全部送达，可以回到电脑上看了</div>
+
+<div class="card" id="finishCard" hidden>
+  <button id="finish" class="primary">完成</button>
+</div>
+
+<div class="foot">关闭此页面不会中断电脑上的相册<br>在电脑上点「结束」才会停止接收</div>
+
+<script>
+(function () {
+  var base = location.pathname.replace(/\/+$/, "");
+  var fileInput = document.getElementById("file");
+  var camInput = document.getElementById("cam");
+  var list = document.getElementById("list");
+  var totalEl = document.getElementById("total");
+  var hintEl = document.getElementById("hint");
+  var finishCard = document.getElementById("finishCard");
+  var doneEl = document.getElementById("donetip");
+  var okCount = 0, failCount = 0;
+
+  function renderTotal() {
+    var parts = [];
+    if (okCount) parts.push(okCount + " 张已送达");
+    if (failCount) parts.push(failCount + " 张失败");
+    totalEl.textContent = parts.join(" · ");
+    if (okCount || failCount) finishCard.hidden = false;
+  }
+
+  function addItem(file) {
+    var el = document.createElement("div");
+    el.className = "item";
+    var isVideo = /^video\//.test(file.type || "") || /\.(mp4|mov|webm|m4v|mkv|avi)$/i.test(file.name || "");
+    var thumb;
+    if (isVideo) {
+      // 视频没有静态缩略图,放个播放占位符,上传原文件(不转码)。
+      thumb = document.createElement("div");
+      thumb.className = "thumb-video";
+      thumb.textContent = "▶";
+    } else {
+      thumb = document.createElement("img");
+      var url = URL.createObjectURL(file);
+      thumb.src = url;
+      thumb.onload = function () { URL.revokeObjectURL(url); };
+      thumb.onerror = function () { URL.revokeObjectURL(url); thumb.style.visibility = "hidden"; };
+    }
+    var meta = document.createElement("div");
+    meta.className = "meta";
+    var name = document.createElement("div");
+    name.className = "name";
+    name.textContent = file.name || "photo";
+    var bar = document.createElement("div");
+    bar.className = "bar";
+    var fill = document.createElement("i");
+    bar.appendChild(fill);
+    var msg = document.createElement("div");
+    msg.className = "msg";
+    meta.appendChild(name); meta.appendChild(bar); meta.appendChild(msg);
+    el.appendChild(thumb); el.appendChild(meta);
+    list.insertBefore(el, list.firstChild);
+    return { el: el, fill: fill, msg: msg, name: name };
+  }
+
+  function fail(item, text) {
+    item.el.classList.add("err");
+    item.msg.textContent = text;
+    item.fill.style.width = "100%";
+    item.fill.style.background = "rgba(255,120,120,.7)";
+    failCount++;
+    renderTotal();
+  }
+
+  // iPhone 默认拍 HEIC,桌面端解码器不支持。浏览器能解就转成 JPEG;
+  // 转码会丢掉 EXIF(含 GPS),所以只在必要时才走这条路。
+  function toJpeg(file) {
+    return new Promise(function (resolve, reject) {
+      var name = file.name || "photo.heic";
+      var isHeic = /\.(heic|heif)$/i.test(name) || /heic|heif/i.test(file.type || "");
+      if (!isHeic) { resolve({ blob: file, name: name }); return; }
+      var img = new Image();
+      var objUrl = URL.createObjectURL(file);
+      img.onload = function () {
+        URL.revokeObjectURL(objUrl);
+        var w = img.naturalWidth, h = img.naturalHeight;
+        if (!w || !h) { reject(new Error("无法读取这张 HEIC")); return; }
+        var scale = Math.min(1, 4096 / Math.max(w, h));
+        var canvas = document.createElement("canvas");
+        canvas.width = Math.round(w * scale);
+        canvas.height = Math.round(h * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(function (blob) {
+          if (!blob) { reject(new Error("HEIC 转码失败")); return; }
+          resolve({ blob: blob, name: name.replace(/\.(heic|heif)$/i, "") + ".jpg" });
+        }, "image/jpeg", 0.92);
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(objUrl);
+        reject(new Error("这台手机无法转换 HEIC，请在 设置 → 相机 → 格式 里选「兼容性最佳」"));
+      };
+      img.src = objUrl;
+    });
+  }
+
+  function upload(item, payload) {
+    return new Promise(function (resolve, reject) {
+      var ts = payload.ts || Date.now();
+      var query = "?name=" + encodeURIComponent(payload.name) + "&ts=" + ts;
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", base + "/file" + query, true);
+      xhr.upload.onprogress = function (e) {
+        if (e.lengthComputable) item.fill.style.width = Math.round((e.loaded / e.total) * 100) + "%";
+      };
+      xhr.onload = function () {
+        var body = {};
+        try { body = JSON.parse(xhr.responseText || "{}"); } catch (err) {}
+        if (xhr.status === 200 && body.ok) {
+          item.fill.style.width = "100%";
+          okCount++;
+          renderTotal();
+          resolve();
+        } else {
+          fail(item, body.error || ("上传失败 (" + xhr.status + ")"));
+          resolve();
+        }
+      };
+      xhr.onerror = function () {
+        fail(item, "网络中断，请确认手机和电脑在同一个 WiFi");
+        resolve();
+      };
+      xhr.send(payload.blob);
+    });
+  }
+
+  function handleFiles(files) {
+    var arr = Array.prototype.slice.call(files || []);
+    if (!arr.length) return;
+    hintEl.hidden = true;
+    arr.forEach(function (file) {
+      var item = addItem(file);
+      var isVideo = /^video\//.test(file.type || "") || /\.(mp4|mov|webm|m4v|mkv|avi)$/i.test(file.name || "");
+      if (isVideo) {
+        // 视频原样上传,不转码;服务端按普通视频入库。
+        upload(item, { blob: file, name: file.name || "video", ts: file.lastModified })
+          .catch(function (err) { fail(item, err && err.message ? err.message : "上传失败"); });
+        return;
+      }
+      toJpeg(file).then(function (payload) {
+        payload.ts = file.lastModified;
+        return upload(item, payload);
+      }).catch(function (err) {
+        fail(item, err && err.message ? err.message : "处理失败");
+      });
+    });
+    if (arr.length > 0) doneEl.hidden = true;
+  }
+
+  document.getElementById("pick").onclick = function () { fileInput.click(); };
+  document.getElementById("shot").onclick = function () { camInput.click(); };
+  fileInput.onchange = function () { handleFiles(fileInput.files); fileInput.value = ""; };
+  camInput.onchange = function () { handleFiles(camInput.files); camInput.value = ""; };
+
+  document.getElementById("finish").onclick = function () {
+    var btn = this;
+    btn.disabled = true;
+    btn.textContent = "整理中…";
+    fetch(base + "/done", { method: "POST" })
+      .then(function () {
+        finishCard.hidden = true;
+        doneEl.hidden = false;
+        hintEl.hidden = false;
+        hintEl.textContent = "照片已入库，回到电脑上就能在时间轴里看到它们了。";
+      })
+      .catch(function () {
+        btn.disabled = false;
+        btn.textContent = "完成";
+        hintEl.hidden = false;
+        hintEl.textContent = "连接已断开，照片已经保存在电脑上了，回到电脑点「结束」也会自动入库。";
+      });
+  };
+})();
+</script>
+</body>
+</html>

@@ -25,6 +25,10 @@ export default function GalaxyView({
   onAlbumEnter,
   viewIsGalaxy,
   gpsPoints,
+  maxFps,
+  shape,
+  backdropUrl,
+  backdropStrength,
 }: {
   photos: GalaxyPhoto[];
   albums: Album[];
@@ -50,6 +54,14 @@ export default function GalaxyView({
   viewIsGalaxy: boolean;
   /** 有 GPS 的照片:地球上的记忆光点 */
   gpsPoints: { lat: number; lng: number }[];
+  /** 帧率上限(桌面壁纸常驻时降频,0 或不传为不限) */
+  maxFps?: number;
+  /** 当前页面的图形 id(见 core/spaces.ts) */
+  shape?: string;
+  /** 页面背景照片的图片地址,空则无背景板 */
+  backdropUrl?: string | null;
+  /** 背景照片的存在感(0-100) */
+  backdropStrength?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const labelRef = useRef<HTMLDivElement>(null);
@@ -87,6 +99,19 @@ export default function GalaxyView({
   useEffect(() => {
     sceneRef.current?.setAuthPhase(authPhase, convergeRate);
   }, [authPhase, convergeRate]);
+
+  // 帧率上限(壁纸模式 30fps,主界面不限)
+  useEffect(() => {
+    sceneRef.current?.setMaxFps(maxFps ?? 0);
+  }, [maxFps]);
+
+  // 页面形态与背景照片
+  useEffect(() => {
+    if (shape) sceneRef.current?.setShape(shape);
+  }, [shape]);
+  useEffect(() => {
+    sceneRef.current?.setBackdrop(backdropUrl ?? null, backdropStrength ?? 42);
+  }, [backdropUrl, backdropStrength]);
 
   // 星辰照片聚焦/收回 + 旅程导航指令(App → 场景)
   useEffect(() => {

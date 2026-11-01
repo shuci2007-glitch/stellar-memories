@@ -26,8 +26,23 @@ pub struct Photo {
     pub starred: bool,
     pub missing: bool,
     pub imported: bool,
+    /// photo | video
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// 缩略图 / 粒子是否已生成;大批量导入时先入库、后补处理
+    #[serde(default)]
+    pub processed: bool,
+    #[serde(default)]
+    pub duration: Option<f64>,
+    /// 实况照片:静帧(photo)指向配对的动态(mov/video)的 id;普通照片为空
+    #[serde(default)]
+    pub live_video_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+fn default_kind() -> String {
+    "photo".to_string()
 }
 
 #[allow(dead_code)]

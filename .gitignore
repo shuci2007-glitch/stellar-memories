@@ -26,3 +26,5 @@ scripts/terrain-cache/
 
 .local-map-data/
 .local-reference-excluded/
+scripts/.tmp-spaces.mjs
+scripts/glsl-check.js

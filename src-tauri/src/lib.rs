@@ -1,12 +1,19 @@
 mod auth;
+mod backfill;
 mod backup;
+mod album_xfer;
 mod db;
 mod exif;
 mod import;
 mod models;
 mod particle_cache;
 mod protocol;
+#[cfg(feature = "heic")]
+mod heif_decode;
 mod thumbs;
+mod upload;
+mod wallpaper;
+mod hotkeys;
 
 use db::Db;
 use parking_lot::Mutex;
@@ -15,12 +22,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_updater::UpdaterExt;
 
 pub struct AppState {
     pub db: Db,
     pub data_dir: PathBuf,
     pub unlocked: Arc<AtomicBool>,
     pub import_cancel: Arc<Mutex<Option<Arc<import::ImportControl>>>>,
+    pub upload: Arc<Mutex<Option<Arc<upload::UploadSession>>>>,
+    pub wallpaper: Arc<wallpaper::WallpaperManager>,
+    pub backfill: Arc<backfill::Backfill>,
 }
 
 // ---------- 窗口控制 ----------
@@ -45,6 +57,320 @@ fn win_close(window: tauri::Window) {
 }
 
 fn require_unlocked(state: &AppState) -> Result<(),String> { if auth::is_unlocked(&state.unlocked) { Ok(()) } else { Err("请先解锁相册".into()) } }
+
+// ---------- 动态壁纸 ----------
+
+#[tauri::command]
+async fn start_wallpaper(app: AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
+    require_unlocked(&state)?;
+    // 建窗口必须在事件循环之外,否则会和窗口创建回调互相等住
+    wallpaper::start(&app, &state.wallpaper)
+}
+
+#[tauri::command]
+fn stop_wallpaper(app: AppHandle, state: State<AppState>) {
+    wallpaper::stop(&app, &state.wallpaper);
+}
+
+#[tauri::command]
+fn wallpaper_running(state: State<AppState>) -> bool {
+    state.wallpaper.is_running()
+}
+
+// ---------- 手机上传 ----------
+
+#[tauri::command]
+async fn start_phone_upload(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    target_dir: String,
+) -> Result<upload::UploadInfo, String> {
+    require_unlocked(&state)?;
+    let dir = PathBuf::from(target_dir.trim());
+    if dir.as_os_str().is_empty() {
+        return Err("请先选择照片存放的文件夹".into());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("无法创建目标文件夹: {e}"))?;
+    if !dir.is_dir() {
+        return Err("目标路径不是文件夹".into());
+    }
+    {
+        // 换目录等于换会话:先安静地关掉上一个,已收到的照片照常入库。
+        let previous = { state.upload.lock().take() };
+        if let Some(old) = previous {
+            upload::finish(&old);
+        }
+    }
+    let quality = {
+        let conn = state.db.0.lock();
+        db::get_setting(&conn, "particle_tier").unwrap_or_else(|| "medium".into())
+    };
+    let (session, info) =
+        upload::start(app, state.db.clone(), state.data_dir.clone(), quality, dir).await?;
+    *state.upload.lock() = Some(session);
+    Ok(info)
+}
+
+#[tauri::command]
+fn stop_phone_upload(state: State<AppState>) -> Result<usize, String> {
+    let taken = { state.upload.lock().take() };
+    match taken {
+        Some(session) => Ok(upload::finish(&session)),
+        None => Ok(0),
+    }
+}
+
+#[tauri::command]
+fn phone_upload_status(state: State<AppState>) -> Option<upload::UploadStatus> {
+    let current = { state.upload.lock().clone() };
+    current.as_ref().map(upload::status_of)
+}
+
+// ---------- 后台补处理 ----------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackfillStatus {
+    running: bool,
+    paused: bool,
+    done: u32,
+    pending: u32,
+}
+
+#[tauri::command]
+fn backfill_status(state: State<AppState>) -> BackfillStatus {
+    let bf = &state.backfill;
+    BackfillStatus {
+        running: bf.running.load(Ordering::SeqCst),
+        paused: bf.paused.load(Ordering::SeqCst),
+        done: bf.done.load(Ordering::SeqCst),
+        pending: backfill::pending_count(&state.db),
+    }
+}
+
+#[tauri::command]
+fn set_backfill_paused(state: State<AppState>, paused: bool) {
+    state.backfill.paused.store(paused, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn run_backfill(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    require_unlocked(&state)?;
+    let quality = {
+        let conn = state.db.0.lock();
+        db::get_setting(&conn, "particle_tier").unwrap_or_else(|| "medium".into())
+    };
+    state.backfill.paused.store(false, Ordering::SeqCst);
+    backfill::schedule(app, state.db.clone(), state.data_dir.clone(), quality);
+    Ok(())
+}
+
+// ---------- 视频封面(前端截帧回写) ----------
+
+#[tauri::command]
+fn save_video_poster(state: State<AppState>, id: i64, bytes: Vec<u8>) -> Result<(), String> {
+    require_unlocked(&state)?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err("封面图过大".into());
+    }
+    let path = state.data_dir.join("thumbs").join(format!("{id}.jpg"));
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    let conn = state.db.0.lock();
+    conn.execute(
+        "UPDATE photos SET thumb_path=?1, processed=1, updated_at=datetime('now','localtime') WHERE id=?2 AND kind='video'",
+        rusqlite::params![path.to_string_lossy(), id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------- 页面(空间) ----------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Space {
+    id: i64,
+    name: String,
+    shape: String,
+    scope: String,
+    background_photo_id: Option<i64>,
+    /// 内置星云背景的素材 id(carina/orion/...),与 background_photo_id 二选一
+    background_asset: Option<String>,
+    /// plate = 背景板(原图铺在后面), nebula = 整页粒子星云
+    background_mode: String,
+    /// 存在感 0-100
+    background_strength: i64,
+    sort_order: f64,
+    photo_count: i64,
+}
+
+/// 页面可见照片的 SQL 子查询;返回 None 表示不限制(共享页 / 未知页面)。
+fn space_filter(conn: &rusqlite::Connection, space_id: Option<i64>) -> Option<String> {
+    let id = space_id?;
+    let scope: Option<String> = conn
+        .query_row("SELECT scope FROM spaces WHERE id=?1", [id], |r| r.get(0))
+        .ok();
+    match scope.as_deref() {
+        Some("own") => Some(format!(
+            "p.id IN (SELECT photo_id FROM space_photos WHERE space_id = {id})"
+        )),
+        _ => None,
+    }
+}
+
+fn shape_ok(shape: &str) -> bool {
+    !shape.is_empty()
+        && shape.len() <= 32
+        && shape
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+#[tauri::command]
+fn list_spaces(state: State<AppState>) -> Result<Vec<Space>, String> {
+    require_unlocked(&state)?;
+    let conn = state.db.0.lock();
+    let mut q = conn
+        .prepare(
+            "SELECT s.id, s.name, s.shape, s.scope, s.background_photo_id, s.sort_order,
+                CASE WHEN s.scope='shared'
+                     THEN (SELECT COUNT(*) FROM photos WHERE imported=1 AND missing=0)
+                     ELSE (SELECT COUNT(*) FROM space_photos sp JOIN photos p ON p.id=sp.photo_id
+                           WHERE sp.space_id=s.id AND p.imported=1 AND p.missing=0)
+                END,
+                s.background_mode, s.background_strength, s.background_asset
+             FROM spaces s ORDER BY s.sort_order, s.id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = q
+        .query_map([], |r| {
+            Ok(Space {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                shape: r.get(2)?,
+                scope: r.get(3)?,
+                background_photo_id: r.get(4)?,
+                background_asset: r.get::<_, Option<String>>(9)?,
+                sort_order: r.get(5)?,
+                photo_count: r.get(6)?,
+                background_mode: r
+                    .get::<_, Option<String>>(7)?
+                    .unwrap_or_else(|| "plate".into()),
+                background_strength: r.get::<_, Option<i64>>(8)?.unwrap_or(42),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+#[tauri::command]
+fn create_space(state: State<AppState>, name: String, shape: String, scope: String) -> Result<i64, String> {
+    require_unlocked(&state)?;
+    let name = name.trim();
+    if name.is_empty() || name.len() > 60 {
+        return Err("请输入 1-60 个字的页面名称".into());
+    }
+    if !shape_ok(&shape) {
+        return Err("页面图形无效".into());
+    }
+    let scope = if scope == "own" { "own" } else { "shared" };
+    let conn = state.db.0.lock();
+    let order: f64 = conn
+        .query_row("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM spaces", [], |r| r.get(0))
+        .unwrap_or(1.0);
+    conn.execute(
+        "INSERT INTO spaces(name, shape, scope, sort_order) VALUES(?1, ?2, ?3, ?4)",
+        rusqlite::params![name, shape, scope, order],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[tauri::command]
+fn save_space(
+    state: State<AppState>,
+    id: i64,
+    name: String,
+    shape: String,
+    scope: String,
+    background_photo_id: Option<i64>,
+    background_asset: Option<String>,
+    background_mode: Option<String>,
+    background_strength: Option<i64>,
+) -> Result<(), String> {
+    require_unlocked(&state)?;
+    let name = name.trim();
+    if name.is_empty() || name.len() > 60 {
+        return Err("请输入 1-60 个字的页面名称".into());
+    }
+    if !shape_ok(&shape) {
+        return Err("页面图形无效".into());
+    }
+    let scope = if scope == "own" { "own" } else { "shared" };
+    let mode = if background_mode.as_deref() == Some("nebula") { "nebula" } else { "plate" };
+    let strength = background_strength.unwrap_or(42).clamp(0, 100);
+    // 空串统一当"没选",避免前端清空后留下脏值
+    let asset = background_asset
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let conn = state.db.0.lock();
+    conn.execute(
+        "UPDATE spaces SET name=?1, shape=?2, scope=?3, background_photo_id=?4,
+                background_mode=?5, background_strength=?6, background_asset=?7 WHERE id=?8",
+        rusqlite::params![name, shape, scope, background_photo_id, mode, strength, asset, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_space(state: State<AppState>, id: i64) -> Result<(), String> {
+    require_unlocked(&state)?;
+    let conn = state.db.0.lock();
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM spaces", [], |r| r.get(0))
+        .unwrap_or(0);
+    if total <= 1 {
+        return Err("至少要保留一个页面".into());
+    }
+    conn.execute("DELETE FROM spaces WHERE id=?1", [id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn add_space_photos(state: State<AppState>, space_id: i64, photo_ids: Vec<i64>) -> Result<(), String> {
+    require_unlocked(&state)?;
+    if photo_ids.len() > 20_000 {
+        return Err("一次最多放入 20000 张".into());
+    }
+    let mut conn = state.db.0.lock();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for id in photo_ids {
+        tx.execute(
+            "INSERT OR IGNORE INTO space_photos(space_id, photo_id) VALUES(?1, ?2)",
+            rusqlite::params![space_id, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.execute("UPDATE spaces SET scope='own' WHERE id=?1", [space_id])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_space_photos(state: State<AppState>, space_id: i64, photo_ids: Vec<i64>) -> Result<(), String> {
+    require_unlocked(&state)?;
+    let conn = state.db.0.lock();
+    for id in photo_ids {
+        conn.execute(
+            "DELETE FROM space_photos WHERE space_id=?1 AND photo_id=?2",
+            rusqlite::params![space_id, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 
 // ---------- 认证 ----------
 
@@ -218,23 +544,38 @@ fn row_to_photo(r: &rusqlite::Row) -> rusqlite::Result<models::Photo> {
         starred: r.get::<_, i64>(19)? != 0,
         missing: r.get::<_, i64>(20)? != 0,
         imported: r.get::<_, i64>(21)? != 0,
-        created_at: r.get(22)?,
-        updated_at: r.get(23)?,
+        kind: r.get::<_, Option<String>>(22)?.unwrap_or_else(|| "photo".into()),
+        processed: r.get::<_, Option<i64>>(23)?.unwrap_or(1) != 0,
+        duration: r.get(24)?,
+        live_video_id: r.get(25)?,
+        created_at: r.get(26)?,
+        updated_at: r.get(27)?,
     })
 }
 
-const PHOTO_COLS: &str = "id, path, filename, width, height, thumb_path, particle_path, avg_color, score, capture_date, date_source, gps_lat, gps_lon, camera, lens, iso, shutter, aperture, focal, starred, missing, imported, created_at, updated_at";
+/// 实况照片的动态视频不应单独出现在时间轴/星系里:它被静帧持有,只在静帧上播放。
+const LIVE_MOTION_HIDE: &str =
+    "p.id NOT IN (SELECT live_video_id FROM photos WHERE live_video_id IS NOT NULL)";
+
+const PHOTO_COLS: &str = "id, path, filename, width, height, thumb_path, particle_path, avg_color, score, capture_date, date_source, gps_lat, gps_lon, camera, lens, iso, shutter, aperture, focal, starred, missing, imported, kind, processed, duration, live_video_id, created_at, updated_at";
 
 #[tauri::command]
-fn list_photos(state: State<AppState>, album_id: Option<i64>) -> Result<Vec<models::Photo>, String> {
+fn list_photos(
+    state: State<AppState>,
+    album_id: Option<i64>,
+    space_id: Option<i64>,
+) -> Result<Vec<models::Photo>, String> {
     require_unlocked(&state)?;
     let conn = state.db.0.lock();
+    let scope = space_filter(&conn, space_id)
+        .map(|f| format!(" AND {f}"))
+        .unwrap_or_default();
     let mut photos = Vec::new();
     if let Some(aid) = album_id {
         let mut q = conn
             .prepare(&format!(
                 "SELECT {PHOTO_COLS} FROM photos p JOIN album_photos ap ON ap.photo_id = p.id
-                 WHERE ap.album_id = ?1 AND p.imported = 1 AND p.missing = 0 ORDER BY p.capture_date, p.id"
+                 WHERE ap.album_id = ?1 AND p.imported = 1 AND p.missing = 0 AND ({LIVE_MOTION_HIDE}){scope} ORDER BY p.capture_date, p.id"
             ))
             .map_err(|e| e.to_string())?;
         let rows = q.query_map([aid], row_to_photo).map_err(|e| e.to_string())?;
@@ -244,7 +585,7 @@ fn list_photos(state: State<AppState>, album_id: Option<i64>) -> Result<Vec<mode
     } else {
         let mut q = conn
             .prepare(&format!(
-                "SELECT {PHOTO_COLS} FROM photos WHERE imported = 1 AND missing = 0 ORDER BY capture_date, id"
+                "SELECT {PHOTO_COLS} FROM photos p WHERE p.imported = 1 AND p.missing = 0 AND ({LIVE_MOTION_HIDE}){scope} ORDER BY p.capture_date, p.id"
             ))
             .map_err(|e| e.to_string())?;
         let rows = q.query_map([], row_to_photo).map_err(|e| e.to_string())?;
@@ -377,6 +718,9 @@ fn delete_photo(state: State<AppState>, id: i64) -> Result<(), String> {
             tx.execute("UPDATE settings SET value=?1 WHERE key=?2",rusqlite::params![value,key]).map_err(|e| e.to_string())?;
         }
     }
+    // 被删掉的这张照片如果正被当作某个页面的背景,要一并摘掉,否则页面会指向空图。
+    tx.execute("UPDATE spaces SET background_photo_id=NULL WHERE background_photo_id=?1", [id])
+        .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM photos WHERE id=?1", [id]).map_err(|e| e.to_string())?;
     // 相册保留，只为受影响的封面选择仍存在的照片；关联记录由外键级联移除。
     tx.execute("UPDATE albums SET cover_photo_id=(SELECT p.id FROM album_photos ap JOIN photos p ON p.id=ap.photo_id WHERE ap.album_id=albums.id AND p.imported=1 AND p.missing=0 ORDER BY p.score DESC,p.id LIMIT 1) WHERE cover_photo_id=?1", [id]).map_err(|e| e.to_string())?;
@@ -441,11 +785,17 @@ struct TimelineItem {
 }
 
 #[tauri::command]
-fn get_timeline(state: State<AppState>) -> Result<Vec<TimelineItem>, String> {
+fn get_timeline(state: State<AppState>, space_id: Option<i64>) -> Result<Vec<TimelineItem>, String> {
     require_unlocked(&state)?;
     let conn = state.db.0.lock();
+    let scope = space_filter(&conn, space_id)
+        .map(|f| format!(" AND {f}"))
+        .unwrap_or_default();
     let mut q = conn
-        .prepare("SELECT id, capture_date, starred, avg_color FROM photos WHERE imported=1 AND missing=0 ORDER BY capture_date")
+        .prepare(&format!(
+            "SELECT id, capture_date, starred, avg_color FROM photos p
+             WHERE p.imported=1 AND p.missing=0 AND ({LIVE_MOTION_HIDE}){scope} ORDER BY capture_date"
+        ))
         .map_err(|e| e.to_string())?;
     let rows = q
         .query_map([], |r| {
@@ -477,7 +827,7 @@ fn search_photos(state: State<AppState>, query: String) -> Result<Vec<models::Ph
          LEFT JOIN memories m ON m.photo_id = p.id
          LEFT JOIN album_photos ap ON ap.photo_id = p.id
          LEFT JOIN albums al ON al.id = ap.album_id
-         WHERE p.imported = 1 AND p.missing = 0 AND (
+         WHERE p.imported = 1 AND p.missing = 0 AND ({LIVE_MOTION_HIDE}) AND (
            p.filename LIKE ?1 ESCAPE '!' OR p.capture_date LIKE ?2 ESCAPE '!'
            OR m.title LIKE ?1 ESCAPE '!' OR m.text LIKE ?1 ESCAPE '!'
            OR m.location LIKE ?1 ESCAPE '!' OR m.mood LIKE ?1 ESCAPE '!'
@@ -498,8 +848,8 @@ fn list_albums(state: State<AppState>) -> Result<Vec<models::Album>, String> {
     let mut q = conn
         .prepare(
             "SELECT a.id, a.name, a.description, a.cover_photo_id, a.auto, a.sort_order, a.created_at,
-                    (SELECT COUNT(*) FROM album_photos ap JOIN photos p ON p.id=ap.photo_id WHERE ap.album_id = a.id AND p.imported=1 AND p.missing=0) AS cnt,
-                    (SELECT GROUP_CONCAT(ap.photo_id) FROM album_photos ap JOIN photos p ON p.id=ap.photo_id WHERE ap.album_id = a.id AND p.imported=1 AND p.missing=0),
+                    (SELECT COUNT(*) FROM album_photos ap JOIN photos p ON p.id=ap.photo_id WHERE ap.album_id = a.id AND p.imported=1 AND p.missing=0 AND p.id NOT IN (SELECT live_video_id FROM photos WHERE live_video_id IS NOT NULL)) AS cnt,
+                    (SELECT GROUP_CONCAT(ap.photo_id) FROM album_photos ap JOIN photos p ON p.id=ap.photo_id WHERE ap.album_id = a.id AND p.imported=1 AND p.missing=0 AND p.id NOT IN (SELECT live_video_id FROM photos WHERE live_video_id IS NOT NULL)),
                     (SELECT value FROM settings WHERE key = 'album_galaxy_' || a.id)
              FROM albums a ORDER BY a.auto, a.sort_order DESC, a.name",
         )
@@ -715,23 +1065,28 @@ struct GalaxyPhoto {
     title: Option<String>,
     width: i64,
     height: i64,
+    kind: String,
+    processed: bool,
 }
 
 #[tauri::command]
-fn get_galaxy_data(state: State<AppState>) -> Result<Vec<GalaxyPhoto>, String> {
+fn get_galaxy_data(state: State<AppState>, space_id: Option<i64>) -> Result<Vec<GalaxyPhoto>, String> {
     require_unlocked(&state)?;
     let conn = state.db.0.lock();
+    let scope = space_filter(&conn, space_id)
+        .map(|f| format!(" AND {f}"))
+        .unwrap_or_default();
     let mut q = conn
-        .prepare(
-            "SELECT p.id, ap.album_id, p.avg_color, p.capture_date, p.starred, m.title, p.width, p.height
+        .prepare(&format!(
+            "SELECT p.id, ap.album_id, p.avg_color, p.capture_date, p.starred, m.title, p.width, p.height, p.kind, p.processed
              FROM photos p
              LEFT JOIN album_photos ap ON ap.photo_id = p.id
              LEFT JOIN memories m ON m.photo_id = p.id
-             WHERE p.imported = 1 AND p.missing = 0
+             WHERE p.imported = 1 AND p.missing = 0 AND ({LIVE_MOTION_HIDE}){scope}
              ORDER BY p.id,
                       CASE WHEN ap.album_id IS NULL THEN 1 ELSE 0 END,
-                      (SELECT a.auto FROM albums a WHERE a.id = ap.album_id)",
-        )
+                      (SELECT a.auto FROM albums a WHERE a.id = ap.album_id)"
+        ))
         .map_err(|e| e.to_string())?;
     let rows = q
         .query_map([], |r| {
@@ -744,6 +1099,8 @@ fn get_galaxy_data(state: State<AppState>) -> Result<Vec<GalaxyPhoto>, String> {
                 title: r.get(5)?,
                 width: r.get(6)?,
                 height: r.get(7)?,
+                kind: r.get::<_, Option<String>>(8)?.unwrap_or_else(|| "photo".into()),
+                processed: r.get::<_, Option<i64>>(9)?.unwrap_or(1) != 0,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -777,12 +1134,142 @@ fn import_backup_cmd(state: State<AppState>, source: String) -> Result<usize, St
     backup::import_backup(&state.db, PathBuf::from(source).as_path())
 }
 
+// ---------- 单个相册导出/导入(本地分享,不依赖任何服务器) ----------
+
+#[tauri::command]
+fn export_album_cmd(
+    state: State<AppState>,
+    album_id: i64,
+    target: String,
+) -> Result<album_xfer::ExportResult, String> {
+    require_unlocked(&state)?;
+    album_xfer::export_album(&state.db, album_id, &PathBuf::from(target))
+}
+
+#[tauri::command]
+fn import_album_cmd(
+    app: AppHandle,
+    state: State<AppState>,
+    source: String,
+) -> Result<album_xfer::ImportResult, String> {
+    require_unlocked(&state)?;
+    let quality = {
+        let conn = state.db.0.lock();
+        db::get_setting(&conn, "particle_tier").unwrap_or_else(|| "medium".into())
+    };
+    album_xfer::import_album(
+        app,
+        &state.db,
+        &state.data_dir,
+        &PathBuf::from(source),
+        quality,
+    )
+}
+
+// ---------- 自动更新 ----------
+
+/// 后台检查更新:发现新版本则弹窗询问,用户确认后下载安装并重启。
+/// 启动延迟检查与托盘「检查更新」共用此函数。
+fn spawn_update_check(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let updater = match app.updater() {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("获取更新器失败: {e}");
+                return;
+            }
+        };
+        let update = match updater.check().await {
+            Ok(Some(u)) => u,
+            Ok(None) => return, // 已是最新
+            Err(e) => {
+                eprintln!("检查更新失败: {e}");
+                return;
+            }
+        };
+        let version = update.version.clone();
+        let app2 = app.clone();
+        app.dialog()
+            .message(format!(
+                "发现新版本 {version}，是否立即下载并更新？更新完成后会自动重启。"
+            ))
+            .title("软件更新")
+            .buttons(MessageDialogButtons::OkCancelCustom("立即更新".to_string(), "稍后".to_string()))
+            .show(move |yes| {
+                if yes {
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = install_update(app2, update).await {
+                            eprintln!("更新安装失败: {e}");
+                        }
+                    });
+                }
+            });
+    });
+}
+
+async fn install_update(
+    _app: AppHandle,
+    update: tauri_plugin_updater::Update,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // on_chunk(_downloaded, _total); on_finished()
+    update
+        .download_and_install(
+            |_chunk, _total| {},
+            || {},
+        )
+        .await?;
+    // 安装完成后:启动已更新的新进程并退出当前进程,以加载新版本。
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(&exe).spawn();
+    }
+    std::process::exit(0);
+}
+
+#[tauri::command]
+async fn check_for_update(app: AppHandle) -> Result<String, String> {
+    spawn_update_check(app);
+    Ok("正在检查更新…".into())
+}
+
 // ---------- 入口 ----------
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+                    // 只在「按下」时触发一次,避免系统自动重复。
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let code = shortcut.key;
+                    let mods = shortcut.mods;
+                    let ctrl_alt = mods.contains(Modifiers::CONTROL)
+                        && mods.contains(Modifiers::ALT)
+                        && !mods.contains(Modifiers::SHIFT);
+                    if ctrl_alt && code == Code::KeyH {
+                        // 隐藏所有软件与桌面图标,只留动态壁纸;再按恢复。
+                        hotkeys::toggle_desktop_clear();
+                    } else if ctrl_alt && code == Code::KeyT {
+                        // 在壁纸画面内叠加/关闭时间轴。
+                        hotkeys::toggle_wallpaper_timeline(app);
+                    } else if mods.contains(Modifiers::CONTROL)
+                        && mods.contains(Modifiers::ALT)
+                        && mods.contains(Modifiers::SHIFT)
+                        && code == Code::KeyW
+                    {
+                        // 逃生口:直接退出动态壁纸。
+                        if let Some(state) = app.try_state::<AppState>() {
+                            wallpaper::stop(app, &state.wallpaper);
+                        }
+                    }
+                })
+                .build(),
+        )
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .register_asynchronous_uri_scheme_protocol("tm", protocol::handle)
         .setup(|app| {
             // 隔离测试环境:仅 debug 构建允许用环境变量重定向数据目录,不触碰真实用户图库
@@ -802,7 +1289,40 @@ pub fn run() {
                 data_dir,
                 unlocked: unlocked_flag,
                 import_cancel: Arc::new(Mutex::new(None)),
+                upload: Arc::new(Mutex::new(None)),
+                wallpaper: Arc::new(wallpaper::WallpaperManager::new()),
+                backfill: Arc::new(backfill::Backfill::new()),
             });
+
+            // 壁纸窗在桌面层里既没有标题栏也点不到,托盘是唯一稳定的入口。
+            // 托盘失败不能让整个应用起不来,所以只记录不中断。
+            if let Err(e) = setup_tray(app.handle()) {
+                eprintln!("托盘图标创建失败: {e}");
+            }
+            // 记录主线程。壁纸窗口必须在主线程创建:命令 bodies 跑在 tokio 工作线程上,
+            // 在那里初始化 WebView2 会报 ERROR_INVALID_STATE(0x8007139F)。
+            wallpaper::mark_main_thread();
+            setup_shortcut(app.handle());
+
+            // 壁纸开着时关主窗口 = 收进托盘继续放,而不是把整个应用退掉。
+            if let Some(main) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                main.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        let running = handle
+                            .try_state::<AppState>()
+                            .map(|s| s.wallpaper.is_running())
+                            .unwrap_or(false);
+                        if running {
+                            api.prevent_close();
+                            if let Some(w) = handle.get_webview_window("main") {
+                                let _ = w.hide();
+                            }
+                        }
+                    }
+                });
+            }
+
             // 诊断:STELLAR_WEBVIEW_DEVTOOLS=1 时打开 WebView 控制台(仅 debug 构建)
             #[cfg(debug_assertions)]
             if std::env::var("STELLAR_WEBVIEW_DEVTOOLS").as_deref() == Ok("1") {
@@ -811,10 +1331,22 @@ pub fn run() {
                     w.open_devtools();
                 }
             }
+            // 启动后延迟自动检查更新(仅一次);发现新版本则弹窗询问是否更新。
+            {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                    spawn_update_check(h);
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             win_minimize, win_toggle_maximize, win_close,
+            start_wallpaper, stop_wallpaper, wallpaper_running,
+            start_phone_upload, stop_phone_upload, phone_upload_status,
+            backfill_status, set_backfill_paused, run_backfill, save_video_poster,
+            list_spaces, create_space, save_space, delete_space, add_space_photos, remove_space_photos,
             auth_state, set_password, set_passwordless, change_password, verify_password, lock_app,
             get_setting, set_setting, save_province_wall,
             import_photos, cancel_import,
@@ -824,10 +1356,194 @@ pub fn run() {
             list_albums, save_album_galaxy, create_album, rename_album, set_album_description, delete_album, set_album_cover,
             get_connections, add_connection, remove_connection,
             get_galaxy_data,
-            export_backup_cmd, import_backup_cmd,
+            export_backup_cmd, import_backup_cmd, check_for_update,
+            export_album_cmd, import_album_cmd,
+            cloud_request,
+            cloud_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[derive(serde::Serialize)]
+struct CloudResponse {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: String,
+}
+
+static CLOUD_HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn cloud_http() -> &'static reqwest::Client {
+    CLOUD_HTTP.get_or_init(|| {
+        reqwest::Client::builder()
+            .build()
+            .expect("failed to build cloud http client")
+    })
+}
+
+/// 桌面端访问云端 API。
+///
+/// 云服务端做**精确 Origin 校验**，而 webview 的 `Headers` 会丢弃 `Origin`
+/// （Fetch 规范里的 forbidden request header），所以必须由 Rust 侧发请求并显式带上官方
+/// Origin，才能与网页端的行为完全一致。
+#[tauri::command]
+async fn cloud_request(
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+    body_base64: Option<String>,
+) -> Result<CloudResponse, String> {
+    let m = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
+    let mut req = cloud_http().request(m, &url);
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    if let Some(b) = body {
+        req = req.body(b);
+    } else if let Some(b64) = body_base64 {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64.as_bytes())
+            .map_err(|e| e.to_string())?;
+        req = req.body(bytes);
+    }
+    let res = req.send().await.map_err(|e| e.to_string())?;
+    let status = res.status().as_u16();
+    let hs: Vec<(String, String)> = res
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+    let text = res.text().await.map_err(|e| e.to_string())?;
+    Ok(CloudResponse {
+        status,
+        headers: hs,
+        body: text,
+    })
+}
+
+/// 下载云端文件到本地（供导入本地库使用）。
+/// 同一 storage_path 永远映射到同一文件名，便于 import 按 path 去重。
+#[tauri::command]
+async fn cloud_download(
+    state: State<'_, AppState>,
+    url: String,
+    storage_path: String,
+) -> Result<String, String> {
+    require_unlocked(&state)?;
+    use std::hash::{Hash, Hasher};
+
+    let dir = state.data_dir.join("cloud");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let ext = storage_path
+        .rsplit('.')
+        .next()
+        .filter(|s| !s.is_empty() && s.len() <= 5 && s.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or("bin")
+        .to_lowercase();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    storage_path.hash(&mut hasher);
+    let stem = format!("{:016x}", hasher.finish());
+    let dest = dir.join(format!("{}.{}", stem, ext));
+    let part = dir.join(format!("{}.{}.part", stem, ext));
+
+    // 已下载过：确认不是上次中断留下的空文件
+    if dest.exists() {
+        let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+        if size > 0 {
+            return Ok(dest.to_string_lossy().to_string());
+        }
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    let res = cloud_http().get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = res.status();
+    if !status.is_success() {
+        return Err(format!("下载失败：HTTP {}", status.as_u16()));
+    }
+    let bytes = res.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("下载内容为空，请重试".into());
+    }
+    // 先写 .part 再原子改名，避免中断后留下"看起来已完成"的残缺文件
+    std::fs::write(&part, &bytes).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&dest);
+    std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+
+    let show = MenuItem::with_id(app, "show", "显示主界面", true, None::<&str>)?;
+    let check_update = MenuItem::with_id(app, "check-update", "检查更新", true, None::<&str>)?;
+    let stop_wp = MenuItem::with_id(app, "stop-wallpaper", "退出动态壁纸", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出星辰相册", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &check_update, &stop_wp, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .tooltip("星辰相册")
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            }
+            "check-update" => {
+                spawn_update_check(app.clone());
+            }
+            "stop-wallpaper" => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    wallpaper::stop(app, &state.wallpaper);
+                }
+            }
+            "quit" => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    wallpaper::stop(app, &state.wallpaper);
+                }
+                app.exit(0);
+            }
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+fn setup_shortcut(app: &AppHandle) {
+    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+    let register = |s: Shortcut, name: &str| {
+        if let Err(e) = app.global_shortcut().register(s) {
+            eprintln!("{name} 热键注册失败: {e}");
+        }
+    };
+    // 逃生口:退出动态壁纸
+    register(
+        Shortcut::new(
+            Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
+            Code::KeyW,
+        ),
+        "退出壁纸",
+    );
+    // 一键清空桌面(隐藏软件 + 图标)
+    register(
+        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyH),
+        "隐藏桌面",
+    );
+    // 在壁纸内叠加时间轴
+    register(
+        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyT),
+        "时间轴",
+    );
 }
 
 #[allow(dead_code)]

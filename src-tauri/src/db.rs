@@ -124,6 +124,85 @@ fn migrate(mut conn: Connection) -> Result<Connection, String> {
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
+
+    if version < 2 {
+        // 多页面(空间)+ 视频 + 延迟处理。全部是加列/建表,老库原地升级。
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        // 重复升级时列已存在,忽略错误即可。
+        let _ = tx.execute("ALTER TABLE photos ADD COLUMN kind TEXT NOT NULL DEFAULT 'photo'", []);
+        let _ = tx.execute("ALTER TABLE photos ADD COLUMN processed INTEGER NOT NULL DEFAULT 1", []);
+        let _ = tx.execute("ALTER TABLE photos ADD COLUMN duration REAL", []);
+        tx.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS spaces (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                name               TEXT NOT NULL,
+                shape              TEXT NOT NULL DEFAULT 'spiral',
+                scope              TEXT NOT NULL DEFAULT 'shared',
+                background_photo_id INTEGER,
+                sort_order         REAL NOT NULL DEFAULT 0,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE TABLE IF NOT EXISTS space_photos (
+                space_id   INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+                photo_id   INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+                added_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                PRIMARY KEY (space_id, photo_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_space_photos ON space_photos(space_id);
+            CREATE INDEX IF NOT EXISTS idx_photos_processed ON photos(processed);
+            "#,
+        )
+        .map_err(|e| format!("建表失败: {e}"))?;
+        // 首个页面:共享全部照片,保证升级后打开就是原来那一片星辰。
+        let has_space: bool = tx
+            .query_row("SELECT EXISTS(SELECT 1 FROM spaces)", [], |r| r.get(0))
+            .unwrap_or(false);
+        if !has_space {
+            tx.execute(
+                "INSERT INTO spaces(name, shape, scope, sort_order) VALUES('主星系', 'spiral', 'shared', 0)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.pragma_update(None, "user_version", 2)
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    if version < 3 {
+        // 背景照片的两种呈现:plate = 半透明背景板,nebula = 整页粒子星云;strength 是 0-100 的存在感
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let _ = tx.execute(
+            "ALTER TABLE spaces ADD COLUMN background_mode TEXT NOT NULL DEFAULT 'plate'",
+            [],
+        );
+        let _ = tx.execute(
+            "ALTER TABLE spaces ADD COLUMN background_strength INTEGER NOT NULL DEFAULT 42",
+            [],
+        );
+        tx.pragma_update(None, "user_version", 3)
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    if version < 4 {
+        // 实况照片:静帧关联其动态视频。加列即可,老库原地升级。
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let _ = tx.execute("ALTER TABLE photos ADD COLUMN live_video_id INTEGER", []);
+        tx.pragma_update(None, "user_version", 4)
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    if version < 5 {
+        // 内置星云背景:存素材 id(carina/orion/...),与 background_photo_id 二选一。
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let _ = tx.execute("ALTER TABLE spaces ADD COLUMN background_asset TEXT", []);
+        tx.pragma_update(None, "user_version", 5)
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
     Ok(conn)
 }
 

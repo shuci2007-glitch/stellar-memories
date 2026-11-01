@@ -7,6 +7,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import {tmThumb,type Photo} from '../core/types';
 import {memoryRoutes,validGps,routeGeometry} from '../core/memoryRoutes';
 import {loadMapRoutesEnabled,MAP_ROUTE_SETTINGS_EVENT} from '../core/MapRouteSettings';
+import {isTauri} from '../core/env';
 import {maplibreZoomForRadius,maplibreRadiusForZoom} from '../core/globeHandoff';
 import {ipc} from '../core/db';
 import InteractiveMapStarfield from './InteractiveMapStarfield';
@@ -50,13 +51,14 @@ export default function MapView({photos,onOpenPhoto,focusPhotoId,active,location
  const fadeRef=useRef<HTMLDivElement>(null);
  const [ready,setReady]=useState(false),[error,setError]=useState(''),[day,setDay]=useState(''),[index,setIndex]=useState<number|null>(null),[playing,setPlaying]=useState(false);
  const [routesEnabled,setRoutesEnabled]=useState(false);
- useEffect(()=>{
-  let live=true,changed=false;
-  const update=(e:Event)=>{changed=true;setRoutesEnabled((e as CustomEvent<boolean>).detail);};
-  window.addEventListener(MAP_ROUTE_SETTINGS_EVENT,update);
-  void loadMapRoutesEnabled().then(value=>{if(live&&!changed)setRoutesEnabled(value);}).catch(()=>{if(live)setError('连线设置读取失败，请在设置中重新选择。');});
-  return()=>{live=false;window.removeEventListener(MAP_ROUTE_SETTINGS_EVENT,update);};
- },[]);
+  useEffect(()=>{
+   if(!isTauri())return; // 浏览器回退模式:无后端,不再发起读取
+   let live=true,changed=false;
+   const update=(e:Event)=>{changed=true;setRoutesEnabled((e as CustomEvent<boolean>).detail);};
+   window.addEventListener(MAP_ROUTE_SETTINGS_EVENT,update);
+   void loadMapRoutesEnabled().then(value=>{if(live&&!changed)setRoutesEnabled(value);}).catch(()=>{if(live)setError('连线设置读取失败，请在设置中重新选择。');});
+   return()=>{live=false;window.removeEventListener(MAP_ROUTE_SETTINGS_EVENT,update);};
+  },[]);
  const [groupLevel,setGroupLevel]=useState<'province'|'district'|'site'>('province');
  const [wallKey,setWallKey]=useState<string|null>(null);
  const [nearbyKey,setNearbyKey]=useState<string|null>(null);
@@ -133,8 +135,6 @@ export default function MapView({photos,onOpenPhoto,focusPhotoId,active,location
   if(import.meta.env.DEV){
     const w=window as unknown as {__memMaps?:maplibregl.Map[];__memMap?:maplibregl.Map};
     (w.__memMaps ??= []).push(map); w.__memMap=map;
-    map.on('load',()=>console.log('MAP LOAD FIRED'));
-    map.on('error',e=>console.log('MAP ERR',String(e?.error??e).slice(0,200)));
   }
 
   // 分级 DOM 标注:全球层主要国家(低倍率) / 中国省份(进入区域后)

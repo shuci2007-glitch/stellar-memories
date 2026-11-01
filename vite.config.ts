@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { copyFile, mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -34,6 +35,13 @@ export default defineConfig({
     minify: "esbuild",
     sourcemap: false,
     chunkSizeWarningLimit: 1600,
+    rollupOptions: {
+      // 桌面壁纸是独立窗口、独立入口:不加载任何界面组件与地图依赖。
+      input: {
+        main: resolve(process.cwd(), "index.html"),
+        wallpaper: resolve(process.cwd(), "wallpaper.html"),
+      },
+    },
   },
   worker: { format: "es" },
   optimizeDeps: { exclude: ["maplibre-gl"] },

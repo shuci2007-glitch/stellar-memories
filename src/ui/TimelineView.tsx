@@ -1,10 +1,17 @@
 import { useMemo } from "react";
-import { tmThumb, type Photo } from "../core/types";
+import { tmThumb } from "../core/types";
 import { prewarmDetailPhoto } from '../three/DetailPhotoResources';
+
+interface TimelinePhoto {
+  id: number;
+  captureDate: string | null;
+  filename?: string;
+  liveVideoId?: number | null;
+}
 
 interface YearBlock {
   year: string;
-  months: { month: string; photos: Photo[] }[];
+  months: { month: string; photos: TimelinePhoto[] }[];
 }
 
 /** 时间轴视图:年 → 月 → 照片 */
@@ -12,11 +19,11 @@ export default function TimelineView({
   photos,
   onOpenPhoto,
 }: {
-  photos: Photo[];
+  photos: TimelinePhoto[];
   onOpenPhoto: (id: number, source?: HTMLElement) => void;
 }) {
   const blocks = useMemo<YearBlock[]>(() => {
-    const byYear = new Map<string, Map<string, Photo[]>>();
+    const byYear = new Map<string, Map<string, TimelinePhoto[]>>();
     for (const p of photos) {
       const key = p.captureDate?.slice(0, 10) ?? "unknown";
       const year = key === "unknown" ? "未知时间" : key.slice(0, 4);
@@ -63,6 +70,7 @@ export default function TimelineView({
                   {m.photos.map((p) => (
                     <div key={p.id} className="ph" onPointerEnter={()=>prewarmDetailPhoto(p.id)} onFocus={()=>prewarmDetailPhoto(p.id)} onPointerDown={()=>prewarmDetailPhoto(p.id)} onClick={(e) => onOpenPhoto(p.id, e.currentTarget)}>
                       <img src={tmThumb(p.id)} alt={p.filename} loading="lazy" />
+                      {p.liveVideoId != null && <span className="thumb-live-badge">实况</span>}
                     </div>
                   ))}
                 </div>

@@ -10,7 +10,7 @@ import * as THREE from "three";
  * 分布全部使用固定种子,resize/拖动不会重排。
  */
 
-const VERT = /* glsl */ `
+export const STAR_VERT = /* glsl */ `
 precision highp float;
 
 attribute vec3 aSeed;    // 稳定随机 0..1
@@ -25,6 +25,11 @@ uniform float uGather;   // 0=散开 1=归位(登录入场,只影响远景/中�
 uniform vec3 uCamPos;
 uniform float uNearBox;  // 近景缠绕盒边长
 uniform float uGentle;
+uniform vec3 uTint;      // 形态染色(球状星云 = 贾维斯蓝)
+uniform float uTintMix;  // 0 = 原色, 1 = 全染
+uniform float uGain;     // 整体亮度增益
+uniform vec4 uSpin;      // 宇宙自旋四元数;让点云图形(球状/环状等)像星系一样旋转
+uniform float uSpinEnabled;
 uniform vec3 uTrailOrigins[16];
 uniform vec3 uTrailDirs[16];
 uniform float uTrailWeights[16];
@@ -37,6 +42,18 @@ float easeOut(float t) { return 1.0 - pow(1.0 - t, 3.0); }
 
 void main() {
   vec3 p = position;
+
+  // 点云图形(球状/环状等)跟随宇宙自旋旋转:只对中景/远景层生效,
+  // 近景星尘是围着相机回绕的,不旋转(否则会和 uCamPos 回绕打架)。
+  float spinnable = (1.0 - step(1.5, aLayer)) * uSpinEnabled;
+  if (spinnable > 0.5) {
+    vec3 q = uSpin.xyz;
+    float w = uSpin.w;
+    p = p + 2.0 * cross(q, cross(q, p) + w * p);
+  }
+  // 旋转后的基准位置:后面入场归位要用它,不能用原始 position,否则旋转会被覆盖掉。
+  vec3 base = p;
+
   float layerNear = step(1.5, aLayer);
 
   // —— 所有星星的缓慢漂移:seed 决定方向与节奏,永不重排 ——
@@ -51,8 +68,8 @@ void main() {
   // —— 登录入场:远景/中景从四散缓慢归位(逐星错峰);近景不参与 ——
   float g = clamp(uGather * 1.6 - aSeed.x * 0.6, 0.0, 1.0);
   g = easeOut(g);
-  vec3 scattered = position * (1.6 + aScatter * 1.4) + (aSeed - 0.5) * 120.0;
-  p = mix(scattered, position, g * (1.0 - layerNear));
+  vec3 scattered = base * (1.6 + aScatter * 1.4) + (aSeed - 0.5) * 120.0;
+  p = mix(scattered, base, g * (1.0 - layerNear));
 
   // 先回绕到实际显示位置，再计算局部扰动，避免近景星受到远处射线影响。
   vec3 rel = p - uCamPos;
@@ -102,10 +119,12 @@ void main() {
   float layerGain = aLayer < 0.5 ? 0.82 : (aLayer < 1.5 ? 0.88 : 0.72);
   vAlpha = uOpacity * twinkle * (0.34 + aSeed.y * 0.5) * distFade * layerGain;
   vColor *= 0.8 + aTwinkle * 0.35;
+  vColor = mix(vColor, uTint, uTintMix);
+  vAlpha *= uGain;
 }
 `;
 
-const FRAG = /* glsl */ `
+export const STAR_FRAG = /* glsl */ `
 precision highp float;
 varying vec3 vColor;
 varying float vAlpha;
@@ -138,9 +157,15 @@ export class Starfield {
   private geo: THREE.BufferGeometry;
   private gatherCur = 1;
   private gatherTarget = 1;
+  private shellCount: number;
+  private midCount: number;
+  /** 原始星野坐标,用于换回旋臂星系时还原 */
+  private basePos: Float32Array;
 
   constructor(shellCount = 2400, midCount = 3400, nearCount = 6500) {
     const rng = mulberry32(0x51ed270b);
+    this.shellCount = shellCount;
+    this.midCount = midCount;
     const total = shellCount + midCount + nearCount;
     const pos = new Float32Array(total * 3);
     const seed = new Float32Array(total * 3);
@@ -190,6 +215,8 @@ export class Starfield {
       twinkle[i] = rng();
     }
 
+    this.basePos = pos.slice();
+
     this.geo = new THREE.BufferGeometry();
     this.geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     this.geo.setAttribute("aSeed", new THREE.BufferAttribute(seed, 3));
@@ -198,8 +225,8 @@ export class Starfield {
     this.geo.setAttribute("aTwinkle", new THREE.BufferAttribute(twinkle, 1));
 
     this.mat = new THREE.ShaderMaterial({
-      vertexShader: VERT,
-      fragmentShader: FRAG,
+      vertexShader: STAR_VERT,
+      fragmentShader: STAR_FRAG,
       uniforms: {
         uTime: { value: 0 },
         uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
@@ -208,6 +235,11 @@ export class Starfield {
         uCamPos: { value: new THREE.Vector3() },
         uNearBox: { value: nearBox },
         uGentle: { value: 0 },
+        uTint: { value: new THREE.Color("#3fa6ff") },
+        uTintMix: { value: 0 },
+        uGain: { value: 1 },
+        uSpin: { value: new THREE.Vector4(0, 0, 0, 1) },
+        uSpinEnabled: { value: 1 },
         uTrailOrigins: { value: this.trail.map(sample=>sample.origin) },
         uTrailDirs: { value: this.trail.map(sample=>sample.dir) },
         uTrailWeights: { value: new Float32Array(16) },
@@ -226,6 +258,69 @@ export class Starfield {
 
   setOpacity(o: number) {
     this.mat.uniforms.uOpacity.value = o;
+  }
+
+  /** 宇宙自旋四元数:让点云图形随星系一起旋转 */
+  setSpin(q: THREE.Quaternion) {
+    const u = this.mat.uniforms.uSpin.value as THREE.Vector4;
+    u.set(q.x, q.y, q.z, q.w);
+  }
+
+  /** 是否让点云图形跟随自旋(旋臂星系用 galaxy 当主体,星野保持稳定) */
+  setSpinEnabled(on: boolean) {
+    this.mat.uniforms.uSpinEnabled.value = on ? 1 : 0;
+  }
+
+  /** 形态染色:传 null 恢复原本的冷暖星色 */
+  setLook(tint: THREE.Color | null, gain = 1, mixAmount = 0.9) {
+    const u = this.mat.uniforms;
+    if (tint) {
+      (u.uTint.value as THREE.Color).copy(tint);
+      u.uTintMix.value = mixAmount;
+    } else {
+      u.uTintMix.value = 0;
+    }
+    u.uGain.value = gain;
+  }
+
+  /**
+   * 让星野跟着页面「图形」变形。
+   *
+   * 只重排远景(球壳)与中景(星群)两层——近景那层是围着相机回绕的星尘,
+   * 位置由 shader 用 uCamPos 取模算出来,改坐标没有意义。
+   * 传 null 恢复成原始星野(旋臂星系用)。
+   */
+  applyShape(
+    layout: ((i: number, total: number) => { x: number; y: number; z: number }) | null
+  ) {
+    const attr = this.geo.getAttribute("position") as THREE.BufferAttribute;
+    const pos = attr.array as Float32Array;
+    if (!layout) {
+      pos.set(this.basePos);
+      attr.needsUpdate = true;
+      return;
+    }
+    const seed = (this.geo.getAttribute("aSeed") as THREE.BufferAttribute).array as Float32Array;
+    const mid = this.midCount;
+
+    // 中景:形态本体。抖动取每颗星自己的稳定 seed,切换图形时不会跳闪。
+    for (let i = 0; i < mid; i++) {
+      const p = layout(i, mid);
+      const o = (this.shellCount + i) * 3;
+      pos[o] = p.x + (seed[o] - 0.5) * 7;
+      pos[o + 1] = p.y + (seed[o + 1] - 0.5) * 7;
+      pos[o + 2] = p.z + (seed[o + 2] - 0.5) * 7;
+    }
+    // 远景:同一形态放大三倍,作为轮廓的纵深回声
+    for (let i = 0; i < this.shellCount; i++) {
+      const p = layout(i, this.shellCount);
+      const o = i * 3;
+      const far = 3.1;
+      pos[o] = p.x * far + (seed[o] - 0.5) * 90;
+      pos[o + 1] = p.y * far + (seed[o + 1] - 0.5) * 90;
+      pos[o + 2] = p.z * far + (seed[o + 2] - 0.5) * 90;
+    }
+    attr.needsUpdate = true;
   }
 
   /** 登录入场:立即散开,然后星点缓慢归位 */

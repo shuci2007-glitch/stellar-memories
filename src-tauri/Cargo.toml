@@ -1,6 +1,6 @@
 [package]
 name = "stellar-memories"
-version = "1.0.0"
+version = "1.2.0"
 description = "星辰相册 - 把回忆变成可以探索的星系"
 authors = ["Stellar Memories"]
 edition = "2021"
@@ -15,9 +15,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-updater = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "charset"] }
+base64 = "0.22"
+axum = { version = "0.8", features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+filetime = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -29,6 +37,29 @@ rand_chacha = "0.3"
 rayon = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
+
+# 桌面端 HEIC 静帧解码(仅 Package B)。走 Windows 系统自带的 HEIF 解码器,
+# 纯 Rust 绑定,不需要 cmake / vcpkg 之类的原生工具链;运行时需要系统已装 HEIF 支持
+# (Windows 10 1809+ 自带,少数精简版需在「Microsoft Store」装「HEIF Image Extensions」)。
+# 用 cargo feature 隔离:Package A 完全不引入这个依赖,保持轻量。
+[dependencies.windows]
+# 版本必须与 tauri 内部使用的 windows(0.62.x)对齐,否则 windows_core 会同时存在
+# 两个版本,导致 trait impl 冲突无法编译(required_hierarchy / CanInto 报错)。
+version = "0.62"
+optional = true
+features = [
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Storage",
+    "Storage_Streams",
+    "Graphics_Imaging",
+    "Foundation",
+]
+
+[features]
+default = []
+# 桌面端也解码 HEIC 静帧(实况照片的 .HEIC 静帧 / iPhone 导出的 HEIC 照片)
+heic = ["dep:windows"]
 
 [profile.release]
 opt-level = 3

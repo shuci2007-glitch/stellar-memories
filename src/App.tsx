@@ -15,8 +15,28 @@ const MapView = lazy(() => import("./ui/MapView"));
 import PhotoDetail from "./ui/PhotoDetail";
 import ImportOverlay from "./ui/ImportOverlay";
 import SettingsView from "./ui/SettingsView";
+import CloudPanel from "./ui/CloudPanel";
+import BackfillBar from "./ui/BackfillBar";
+import VideoPosterAgent from "./core/videoPoster";
+import { SpaceBar } from "./ui/SpaceBar";
+import { shapeOf, type Space } from "./core/spaces";
 import { ToastProvider, useToast } from "./core/toast";
+import { listenImportProgress } from "./core/events";
 import { ipc } from "./core/db";
+import { isTauri } from "./core/env";
+
+// 浏览器回退模式(无后端)下,塞一组演示页面,让页面切换条出现并能切到不同图形。
+// 仅用于预览,桌面端永远走 Tauri,不会用到这份数据。
+const DEMO_SPACES: import("./core/spaces").Space[] = [
+  { id: 1, name: "旋臂星系",   shape: "spiral", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 0, photoCount: 0 },
+  { id: 4, name: "球状星云",   shape: "sphere", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 3, photoCount: 0 },
+  { id: 5, name: "环状",       shape: "ring",   scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 4, photoCount: 0 },
+  { id: 6, name: "环带行星",   shape: "saturn", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 5, photoCount: 0 },
+  { id: 7, name: "金色光环",   shape: "golden", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 6, photoCount: 0 },
+  { id: 8, name: "粒子星云",   shape: "nebula", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 7, photoCount: 0 },
+];
+
+import { tmPreview } from "./core/types";
 import type { JourneyEvent } from "./three/GalaxyScene";
 import type {
   Album,
@@ -227,11 +247,17 @@ function Shell() {
   }, []);
   useEffect(()=>()=>{transition.current.cancel();},[]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [cloudOpen, setCloudOpen] = useState(false);
   const [searchOpen,setSearchOpen]=useState(false);
   const changeSearch=useCallback((open:boolean)=>{setSearchOpen(open);if(open){setSettingsOpen(false);setImportMenu(false);}},[]);
 
   const [albums, setAlbums] = useState<Album[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
+  const [allPhotos, setAllPhotos] = useState<Photo[]>([]);
+  const [spaces, setSpaces] = useState<Space[]>([]);
+  const [spaceId, setSpaceId] = useState<number | null>(null);
+  const spaceRef = useRef<number | null>(null);
+  spaceRef.current = spaceId;
   const [galaxyPhotos, setGalaxyPhotos] = useState<GalaxyPhoto[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [dataReady, setDataReady] = useState(false);
@@ -249,6 +275,13 @@ function Shell() {
   const [convergeRate, setConvergeRate] = useState(1.45);
   const onEnterComplete = useCallback(() => setStage("ready"), []);
   useEffect(() => {
+    // 纯网页预览(非 Tauri 环境,比如浏览器里直接打开 dev server):没有后端,
+    // 直接放行进主界面,方便先看界面/星空效果。桌面应用永远走 Tauri,不会进这里。
+    if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
+      setAuthReady(true);
+      setStage("ready");
+      return;
+    }
     let live=true;
     const changed=(e:Event)=>{const s=(e as CustomEvent<{hasPassword:boolean;passwordless:boolean}>).detail;setHasPassword(s.hasPassword);setPasswordless(s.passwordless);setAuthReady(true);};
     window.addEventListener(AUTH_SETTINGS_EVENT,changed);
@@ -282,6 +315,8 @@ function Shell() {
     setLocationEdit(null);
     setMapReturn(null);returningPhoto.current=null;mapTarget.current=null;
     setSearchOpen(false);setImportMenu(false);
+    // 云端面板浮在锁屏之上，锁屏时必须一起关掉，否则本地锁形同虚设
+    setCloudOpen(false);
     setNavPending(null);
     setShelfPhase("traveling");
     setShelfFocus(null);
@@ -291,26 +326,92 @@ function Shell() {
 
   // ---------- 数据加载 ----------
   const reload = useCallback(async () => {
+    // 浏览器回退模式(非 Tauri)下没有后端,直接以空数据标记就绪,不发起 ipc
+    if (!isTauri()) { setDataReady(true); return; }
+    const sid = spaceRef.current;
     try {
-      const [a, p, g, c] = await Promise.all([
+      const [a, p, g, c, all] = await Promise.all([
         ipc.listAlbums(),
-        ipc.listPhotos(),
-        ipc.getGalaxyData(),
+        ipc.listPhotos(undefined, sid ?? undefined),
+        ipc.getGalaxyData(sid ?? undefined),
         ipc.getConnections(),
+        ipc.listPhotos(),
       ]);
       setAlbums(a);
       setPhotos(p);
       setGalaxyPhotos(g);
       setConnections(c);
+      setAllPhotos(all);
       setDataReady(true);
     } catch (e) {
       toast(`数据加载失败: ${e}`);
     }
   }, [toast]);
 
+  // 任何来源的导入结束后都刷新本地数据。
+  // 从云端面板导入时不会挂 ImportOverlay，所以这里常驻监听一次。
   useEffect(() => {
-    if (authed) reload();
+    if (!authed) return;
+    if (!isTauri()) return; // 浏览器回退模式:无导入事件监听
+    let un: (() => void) | null = null;
+    let alive = true;
+    void (async () => {
+      const fn = await listenImportProgress((p) => {
+        if (p.phase === "done") void reload();
+      });
+      if (alive) un = fn;
+      else fn();
+    })();
+    return () => {
+      alive = false;
+      if (un) un();
+    };
   }, [authed, reload]);
+
+  // 进入后先取页面列表并恢复上次停留的页面,再按页面取照片
+  useEffect(() => {
+    if (!authed) return;
+    if (!isTauri()) {
+      // 浏览器回退模式:没有后端可加载页面,塞一组演示页面,让页面切换条出现并能切到不同图形
+      setSpaces(DEMO_SPACES);
+      const first = DEMO_SPACES[0];
+      spaceRef.current = first.id;
+      setSpaceId(first.id);
+      void reload();
+      return;
+    }
+    let live = true;
+    void (async () => {
+      try {
+        const list = await ipc.listSpaces();
+        if (!live) return;
+        setSpaces(list);
+        const saved = Number(await ipc.getSetting("active_space"));
+        const pick = list.find((s) => s.id === saved) ?? list[0] ?? null;
+        if (pick) {
+          setSpaceId(pick.id);
+          spaceRef.current = pick.id;
+        }
+      } catch (e) {
+        if (live) toast(`页面加载失败: ${e}`);
+      }
+      if (live) void reload();
+    })();
+    return () => { live = false; };
+  }, [authed]);
+
+  // 切换页面 → 重新取该页面的照片
+  const switchSpace = useCallback(
+    (id: number) => {
+      spaceRef.current = id;
+      setSpaceId(id);
+      setSpaces((list) => [...list]);
+      // 浏览器回退模式下没有后端,不要发起 ipc;桌面端才持久化当前页面
+      if (isTauri()) void ipc.setSetting("active_space", String(id)).catch(() => {});
+      void reload();
+    },
+    [reload],
+  );
 
   // ---------- 详情 ----------
   const openDetail = useCallback(
@@ -435,12 +536,19 @@ function Shell() {
       setImportMenu(false);
       const sel = await open(
         mode === "folder"
-          ? { directory: true, multiple: true, title: "选择照片文件夹" }
+          ? { directory: true, multiple: true, title: "选择照片与视频文件夹" }
           : {
               multiple: true,
-              title: "选择照片",
+              title: "选择照片或视频（含实况照片的静帧与动态）",
               filters: [
-                { name: "照片", extensions: ["jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff", "tif"] },
+                {
+                  name: "照片与视频",
+                  extensions: [
+                    "jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff", "tif",
+                    "heic", "heif",
+                    "mp4", "mov", "webm", "m4v", "mkv", "avi",
+                  ],
+                },
               ],
             },
       );
@@ -457,9 +565,10 @@ function Shell() {
     [toast],
   );
 
-  // 拖放导入
+  // 拖放导入(Tauri 专属:浏览器预览无 webview,直接跳过)
   useEffect(() => {
     if (!authed) return;
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
     const p = getCurrentWebview().onDragDropEvent((ev) => {
       const t = ev.payload.type;
       if (t === "enter" || t === "over") {
@@ -537,6 +646,12 @@ function Shell() {
 
   const showLock = stage === "locked" || lockLeaving;
 
+  const activeSpace = spaces.find((s) => s.id === spaceId) ?? null;
+  const activeShape = activeSpace ? shapeOf(activeSpace.shape).id : undefined;
+  const backdropUrl = activeSpace?.backgroundPhotoId
+    ? tmPreview(activeSpace.backgroundPhotoId)
+    : null;
+
   return (
     <div className="app">
       <TitleBar />
@@ -565,6 +680,9 @@ function Shell() {
           onAlbumEnter={enterAlbum}
           viewIsGalaxy={view === "galaxy"}
           gpsPoints={useMemo(() => photos.filter((p) => p.gpsLat !== null && p.gpsLon !== null).map((p) => ({ lat: p.gpsLat as number, lng: p.gpsLon as number })), [photos])}
+          shape={activeShape}
+          backdropUrl={backdropUrl}
+          backdropStrength={activeSpace?.backgroundStrength ?? 42}
         />
         {stage === "ready" && visited.timeline && (
           <div style={{ position: "absolute", inset: 0, opacity: view === "timeline" && navPending === null ? 1 : 0, pointerEvents: view === "timeline" && navPending === null ? "auto" : "none", transition: "opacity 430ms ease" }}>
@@ -603,7 +721,21 @@ function Shell() {
             onView={v=>{setMapReturn(null);returningPhoto.current=null;mapTarget.current=null;setLocationEdit(null);setAppView(s=>({...s,mapPhotoId:null}));changeView(v);}}
             onImport={() => {setSearchOpen(false);setSettingsOpen(false);setImportMenu(s=>!s);}}
             onSettings={() => {setSearchOpen(false);setImportMenu(false);setSettingsOpen(s=>!s);}}
+            onCloud={() => {setSearchOpen(false);setImportMenu(false);setSettingsOpen(false);setCloudOpen(true);}}
             onOpenPhoto={openDetail}
+          />
+        )}
+
+        {stage === "ready" && view === "galaxy" && !detailOpen && spaces.length > 0 && (
+          <SpaceBar
+            spaces={spaces}
+            activeId={spaceId}
+            onSelect={switchSpace}
+            onReload={() => {
+              void ipc.listSpaces().then(setSpaces).catch(() => {});
+              void reload();
+            }}
+            allPhotos={allPhotos}
           />
         )}
 
@@ -676,6 +808,8 @@ function Shell() {
         )}
 
         <ImportOverlay onFinished={reload} />
+        <VideoPosterAgent photos={allPhotos} onChanged={reload} />
+        {stage === "ready" && <BackfillBar onChanged={reload} />}
 
         {dropping && (
           <div className="drop-veil">
@@ -696,6 +830,8 @@ function Shell() {
           <LockScreen hasPassword={hasPassword} passwordless={passwordless} ready={authReady} leaving={lockLeaving} onSuccess={unlock} />
         )}
       </div>
+
+      {cloudOpen && <CloudPanel onClose={() => setCloudOpen(false)} />}
     </div>
   );
 }

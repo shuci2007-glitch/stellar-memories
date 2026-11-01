@@ -1,7 +1,7 @@
 import { getSpherePhotoBridge } from "../three/SpherePhotoBridge";
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ipc } from '../core/db';
-import { tmPhoto, tmThumb, type Photo, type Memory } from '../core/types';
+import { tmPhoto, tmThumb, tmVideo, type Photo, type Memory } from '../core/types';
 import { useToast } from '../core/toast';
 import ParticleDetailCanvas from './ParticleDetailCanvas';
 import OpeningPhotoPreview from './OpeningPhotoPreview';
@@ -91,6 +91,7 @@ export default function PhotoDetail({photo,memory,onMemoryChanged,onClose,onNav,
  const [fit100,setFit100]=useState<'fit'|'100'>('fit');
  const [showExif,setShowExif]=useState(false);
  const [displayMode,setDisplayMode]=useState<'particle'|'original'>(originalFirst?'original':'particle');
+ const [livePlaying,setLivePlaying]=useState(false);
  const [form,setForm]=useState({title:memory.title??'',text:memory.text??'',location:memory.location??'',mood:memory.mood??'',date:photo.captureDate?.slice(0,10)??''});
  const [starred,setStarred]=useState(photo.starred);
  const toast=useToast();
@@ -142,18 +143,49 @@ export default function PhotoDetail({photo,memory,onMemoryChanged,onClose,onNav,
    <div className={'detail-panel continuous-detail'+(bridge?' sphere-detail-panel':'')+(bridge&&(!arrived||exiting)?' sphere-detail-travel':'')+(exiting?' is-exiting':'')+(arrived?' is-arrived':'')+(removing?' is-consuming':'')} role="dialog" aria-label="照片详情">
      <button className="detail-close" onClick={closeUnlessRemoving} aria-label="关闭照片">×</button>
      <div className={'photo-wrap'+(arrived&&!exiting&&displayMode==='particle'?' particle-ellipse-frame':'')} ref={wrapRef}>
-        {canvasMounted&&<ParticleDetailCanvas hidden={originalFirst&&displayMode==='original'} deleting={deleting} onConsumed={()=>void onDeleted(photo.id)} photoId={photo.id} bridge={bridge} active={displayMode==='particle'} onReady={()=>setReady(true)} fit100={fit100==='100'} frozen={exiting} onError={setError} openingProgress={originalFirst?undefined:openingProgress}/>}
-        {!deleting&&originalFirst&&displayMode==='original'&&<div className="map-original-photo"><img src={tmThumb(photo.id)} alt="" draggable={false}/><img src={tmPhoto(photo.id)} alt={photo.filename} draggable={false} onLoad={()=>setOriginalLoaded(true)} style={{opacity:originalLoaded?1:0}}/></div>}
-        {!deleting&&!originalFirst&&!bridge&&(source?.querySelector('img')?<OpeningPhotoPreview image={source.querySelector('img')} progress={openingProgress} ready={ready}/>:!ready&&<img className="detail-loading-photo" src={tmPhoto(photo.id)} alt={photo.filename} draggable={false}/>)}
+        {photo.kind === 'video' && !deleting && (
+          <video
+            className="detail-video"
+            src={tmVideo(photo.id)}
+            poster={tmThumb(photo.id)}
+            controls
+            playsInline
+            preload="metadata"
+          />
+        )}
+        {photo.liveVideoId != null && !deleting && !livePlaying && (
+          <button className="live-play-overlay" onClick={() => setLivePlaying(true)} aria-label="播放实况照片">
+            <span className="live-play-icon">▶</span>
+            <span className="live-badge">实况</span>
+          </button>
+        )}
+        {photo.liveVideoId != null && !deleting && livePlaying && (
+          <video
+            className="detail-video live-video"
+            src={tmVideo(photo.liveVideoId)}
+            poster={tmThumb(photo.id)}
+            autoPlay
+            controls
+            playsInline
+            onEnded={() => setLivePlaying(false)}
+          />
+        )}
+        {photo.kind !== 'video' && canvasMounted&&<ParticleDetailCanvas hidden={originalFirst&&displayMode==='original'} deleting={deleting} onConsumed={()=>void onDeleted(photo.id)} photoId={photo.id} bridge={bridge} active={displayMode==='particle'} onReady={()=>setReady(true)} fit100={fit100==='100'} frozen={exiting} onError={setError} openingProgress={originalFirst?undefined:openingProgress}/>}
+        {photo.kind !== 'video' && !deleting&&originalFirst&&displayMode==='original'&&<div className="map-original-photo"><img src={tmThumb(photo.id)} alt="" draggable={false}/><img src={tmPhoto(photo.id)} alt={photo.filename} draggable={false} onLoad={()=>setOriginalLoaded(true)} style={{opacity:originalLoaded?1:0}}/></div>}
+        {photo.kind !== 'video' && !deleting&&!originalFirst&&!bridge&&(source?.querySelector('img')?<OpeningPhotoPreview image={source.querySelector('img')} progress={openingProgress} ready={ready}/>:!ready&&<img className="detail-loading-photo" src={tmPhoto(photo.id)} alt={photo.filename} draggable={false}/>)}
        {error&&<div className="preview-error">{error}</div>}
      </div>
      <div className="detail-info">
           <div className="detail-info-heading">
-            <div><span className="detail-info-eyebrow">PHOTO MEMORY</span><h2>照片记忆</h2></div>
+            <div>
+              <span className="detail-info-eyebrow">{photo.liveVideoId != null ? "LIVE PHOTO" : "PHOTO MEMORY"}</span>
+              <h2>{photo.liveVideoId != null ? "实况照片" : "照片记忆"}</h2>
+              {photo.liveVideoId != null && <span className="detail-info-live">点击照片可播放动态</span>}
+            </div>
             <button className="detail-info-close" onClick={closeUnlessRemoving} aria-label="关闭照片详情">×</button>
           </div>
           <div className="detail-info-filename" title={photo.filename}>{photo.filename}</div>
-          <div className="detail-mode-bar" role="tablist" aria-label="照片显示模式">
+          <div className="detail-mode-bar" role="tablist" aria-label="照片显示模式" style={photo.kind === 'video' ? { display: 'none' } : undefined}>
             <button role="tab" aria-selected={displayMode==='particle'} className={displayMode==='particle'?'active':''} onClick={()=>setDisplayMode('particle')}>粒子</button>
             <button role="tab" aria-selected={displayMode==='original'} className={displayMode==='original'?'active':''} onClick={()=>setDisplayMode('original')}>原图</button>
           </div>

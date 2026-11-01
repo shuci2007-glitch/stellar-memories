@@ -21,6 +21,13 @@ export interface Photo {
   starred: boolean;
   missing: boolean;
   imported: boolean;
+  /** photo | video */
+  kind: "photo" | "video" | string;
+  /** 缩略图 / 粒子是否已生成;false 表示还在后台排队 */
+  processed: boolean;
+  duration: number | null;
+  /** 实况照片:指向配对的动态视频 id;普通照片 / 视频为 null */
+  liveVideoId: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -56,6 +63,8 @@ export interface GalaxyPhoto {
   title: string | null;
   width: number;
   height: number;
+  kind: "photo" | "video" | string;
+  processed: boolean;
 }
 
 export interface Connection {
@@ -90,6 +99,7 @@ export const tmPreview = (id: number) => `http://tm.localhost/preview/${id}.jpg`
 export const tmPhoto = (id: number) => `http://tm.localhost/photo/${id}`;
 export const tmParticles = (id: number) =>
   `http://tm.localhost/particles/${id}.spc`;
+export const tmVideo = (id: number) => `http://tm.localhost/video/${id}`;
 
 export interface AlbumGalaxyConfig { photoIds: number[] | null; positions: Record<string, [number, number, number]> | null; }
 export function albumGalaxyConfig(album: Album): AlbumGalaxyConfig {

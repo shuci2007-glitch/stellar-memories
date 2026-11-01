@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { open } from "@tauri-apps/plugin-dialog";
 import type { Album, GalaxyPhoto, QualityTier } from "../core/types";
 import { tmThumb } from "../core/types";
 import { ipc } from "../core/db";
@@ -125,12 +126,29 @@ export default function AlbumGalaxyView({ albums, photos, onOpenPhoto, onChanged
   }, [albums, photoMap, resolvePhotoUrl]);
 
   const saveRename = async () => { if (!selectedAlbum || !name.trim()) { setRenaming(false); return; } await ipc.renameAlbum(selectedAlbum.id, name.trim()); await onChanged(); toast("相册已重命名"); setRenaming(false); };
+
+  const [exporting, setExporting] = useState(false);
+  const doExportAlbum = async () => {
+    if (!selectedAlbum) return;
+    const dir = await open({ directory: true, title: "选择导出相册的保存位置" });
+    if (typeof dir !== "string" || !dir) return;
+    setExporting(true);
+    try {
+      const res = await ipc.exportAlbum(selectedAlbum.id, dir);
+      const skipped = res.skipped > 0 ? `（${res.skipped} 张原图缺失已跳过）` : "";
+      toast(`已导出「${res.name}」${res.photoCount} 张到:\n${res.folder}${skipped}`);
+    } catch (e: any) {
+      toast(`导出失败: ${e?.message || e}`);
+    } finally {
+      setExporting(false);
+    }
+  };
   return <section className="album-galaxy-view" ref={host} data-phase={phase}>
     <canvas ref={canvas} aria-label="相册星系选择空间" />
     <header className="album-galaxy-heading"><small>{phase === "index" ? "ALBUM CONSTELLATIONS" : phase === "warp" ? "TRAVERSING MEMORY" : "ALBUM GALAXY"}</small><h1>{phase === "index" ? (albums.length ? "相册星系" : "等待第一座相册星系") : selectedAlbum?.name}</h1><p>{phase === "index" ? "单击预选 · 再次单击或双击进入 · 拖动观察" : phase === "warp" ? "沿星尘穿越，正在显露照片粒子" : "选择一颗照片天体 · ESC 返回相册星系"}</p></header>
     <div className="album-galaxy-labels">{albums.map((album) => <button key={album.id} ref={(element) => { if (element) labels.current.set(album.id, element); else labels.current.delete(album.id); }} onClick={() => window.dispatchEvent(new CustomEvent("album-galaxy-select", { detail: { id: album.id } }))}><b>{album.name}</b><small>{album.photoCount} 张记忆</small></button>)}</div>
     {phase === "index" && albums.length > 0 && <nav className="album-galaxy-index" aria-label="相册目录">{albums.map((album) => <button key={album.id} className={selected === album.id ? "active" : ""} onClick={() => window.dispatchEvent(new CustomEvent("album-galaxy-select", { detail: { id: album.id } }))} onDoubleClick={() => window.dispatchEvent(new CustomEvent("album-galaxy-select", { detail: { id: album.id, confirm: true } }))}><span>{album.name}</span><small>{album.photoCount}</small></button>)}</nav>}
-    {selectedAlbum && phase === "index" && <aside className="album-selection-panel"><small>已选相册星系</small>{renaming ? <input autoFocus value={name} onChange={(event) => setName(event.target.value)} onBlur={saveRename} onKeyDown={(event) => event.key === "Enter" && void saveRename()} /> : <h2>{selectedAlbum.name}</h2>}<p>{selectedAlbum.photoCount} 张照片将在内部形成不规则粒子星群</p><button onClick={() => { setRenaming(true); setName(selectedAlbum.name); }}>重命名</button><span>再次选择画面中的星系进入</span></aside>}
+    {selectedAlbum && phase === "index" && <aside className="album-selection-panel"><small>已选相册星系</small>{renaming ? <input autoFocus value={name} onChange={(event) => setName(event.target.value)} onBlur={saveRename} onKeyDown={(event) => event.key === "Enter" && void saveRename()} /> : <h2>{selectedAlbum.name}</h2>}<p>{selectedAlbum.photoCount} 张照片将在内部形成不规则粒子星群</p><div className="album-selection-actions"><button onClick={() => { setRenaming(true); setName(selectedAlbum.name); }}>重命名</button><button onClick={doExportAlbum} disabled={exporting}>{exporting ? "导出中…" : "导出相册"}</button></div><span>再次选择画面中的星系进入</span></aside>}
     {!albums.length && <div className="solar-empty"><span>✦</span><p>导入照片并建立相册后，每个相册会在这里形成一座独立星系。</p></div>}
   </section>;
 }
