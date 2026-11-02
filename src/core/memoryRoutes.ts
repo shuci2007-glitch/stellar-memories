@@ -55,3 +55,16 @@ export function routeGeometry(photos:Photo[]):FeatureCollection<LineString> {
  }
  return {type:'FeatureCollection',features};
 }
+
+/** 行程播放时「已走过」的那一段，用来把轨迹逐站点亮。 */
+export function routeProgressGeometry(
+ route:{day:string;color:string;photos:Photo[]},
+ upto:number,
+):FeatureCollection<LineString>{
+ const features:Feature<LineString>[]=[];
+ for(let i=1;i<route.photos.length&&i<=upto;i++){
+  const a=route.photos[i-1],b=route.photos[i],coordinates=curvedConnection(a,b,route.day);
+  if(coordinates.length)features.push({type:'Feature',properties:{day:route.day,color:route.color},geometry:{type:'LineString',coordinates}});
+ }
+ return {type:'FeatureCollection',features};
+}

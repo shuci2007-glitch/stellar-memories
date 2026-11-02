@@ -9,6 +9,7 @@ export default function TopBar({
   onImport,
   onSettings,
   onOpenPhoto,
+  onSlideshow,
   searchOpen, onSearchChange,
 }: {
   searchOpen: boolean;
@@ -18,6 +19,7 @@ export default function TopBar({
   onImport: () => void;
   onSettings: () => void;
   onOpenPhoto: (id: number) => void;
+  onSlideshow: () => void;
 }) {
   const setSearchOpen = onSearchChange;
   const panelRef = useRef<HTMLDivElement>(null);
@@ -105,6 +107,12 @@ export default function TopBar({
         <button className="icon-btn" title="导入照片" onClick={onImport}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+        </button>
+        <button className="icon-btn" title="幻灯片放映" onClick={onSlideshow}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <rect x="3.5" y="5.5" width="17" height="13" rx="1.6" stroke="currentColor" strokeWidth="1.5" />
+            <path d="M10.2 9.2v5.6l4.9-2.8-4.9-2.8Z" fill="currentColor" />
           </svg>
         </button>
         <button className="icon-btn" title="设置" onClick={onSettings}>

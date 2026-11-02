@@ -710,6 +710,41 @@ button:active { transform:scale(.98); }
 .route-player { position:absolute; bottom:40px; left:38%; display:flex; gap:20px; padding:16px; background:#121720; }
 .route-player img { width:130px; height:90px; object-fit:cover; cursor:pointer; }
 .route-player small { color:#97a1b0; }.route-player p { margin:10px 0; }.route-player button { padding:8px 12px 0 0; font-size:12px; }
+.route-player .route-info { min-width: 230px; }
+.route-progress { height:3px; border-radius:3px; background:#1e2632; overflow:hidden; margin:10px 0 8px; }
+.route-progress i { display:block; height:100%; background:#cfe0ff; transition:width 320ms ease; }
+.route-meta { display:flex; align-items:center; gap:12px; font-size:11px; color:#97a1b0; }
+.route-meta select { margin-left:5px; padding:2px 6px; background:#1a202b; color:#c9d0db; border:0; font-size:11px; }
+.route-mode { color:#cfe0ff; letter-spacing:.08em; }
+.route-controls { display:flex; gap:16px; margin-top:6px; }
+.route-controls button { padding:0; color:#c9d0db; }
+.route-controls button:hover:not(:disabled) { color:#fff; }
+
+/* ---------- 幻灯片放映 ---------- */
+.slideshow { position:fixed; inset:0; z-index:400; background:#000; overflow:hidden; cursor:none; }
+.slide-img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; cursor:pointer; will-change:transform; }
+@keyframes slideKbA { from { transform:scale(1.015); } to { transform:scale(1.085) translate3d(-.8%,-.6%,0); } }
+@keyframes slideKbB { from { transform:scale(1.085) translate3d(.8%,.6%,0); } to { transform:scale(1.015); } }
+.slide-img.kb-0 { animation: slideKbA 7.2s ease-out both; }
+.slide-img.kb-1 { animation: slideKbB 7.2s ease-out both; }
+.slide-top {
+  position:absolute; top:0; left:0; right:0; display:flex; justify-content:space-between;
+  padding:22px 30px; font-size:12px; letter-spacing:.14em; color:#cfd8e6;
+  background:linear-gradient(rgba(0,0,0,.72),transparent); transition:opacity .35s ease;
+}
+.slide-bottom {
+  position:absolute; left:0; right:0; bottom:0; padding:16px 30px 22px;
+  background:linear-gradient(transparent,rgba(0,0,0,.78)); transition:opacity .35s ease;
+}
+.slideshow.is-idle .slide-top, .slideshow.is-idle .slide-bottom { opacity:0; pointer-events:none; }
+.slide-bar { height:2px; background:rgba(255,255,255,.16); }
+.slide-bar i { display:block; height:100%; width:0; background:#dfe9ff; animation-name:slideProgress; animation-timing-function:linear; animation-fill-mode:forwards; }
+@keyframes slideProgress { from { width:0; } to { width:100%; } }
+.slide-controls { display:flex; align-items:center; gap:16px; margin-top:14px; }
+.slide-controls button { padding:6px 12px; border-radius:999px; font-size:17px; color:#e6edf9; background:rgba(255,255,255,.08); }
+.slide-controls button:hover { background:rgba(255,255,255,.18); }
+.slide-controls .slide-exit { margin-left:auto; font-size:12px; letter-spacing:.08em; }
+.slide-name { margin-top:10px; font-size:11px; color:#8e9aac; letter-spacing:.06em; }
 button:disabled { opacity:.3; cursor:default; }
 .map-nearby img { width:65px; height:55px; object-fit:cover; }.map-nearby { margin-top:20px; }
 .earth-photo-marker { width:76px; height:64px; transition:opacity 240ms ease; pointer-events:none; }

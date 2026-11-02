@@ -5,7 +5,7 @@ import * as maplibregl from 'maplibre-gl';
 import type {GeoJSONSource,Marker,StyleSpecification} from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {tmThumb,type Photo} from '../core/types';
-import {memoryRoutes,validGps,routeGeometry} from '../core/memoryRoutes';
+import {memoryRoutes,validGps,routeGeometry,routeProgressGeometry} from '../core/memoryRoutes';
 import {loadMapRoutesEnabled,MAP_ROUTE_SETTINGS_EVENT} from '../core/MapRouteSettings';
 import {isTauri} from '../core/env';
 import {maplibreZoomForRadius,maplibreRadiusForZoom} from '../core/globeHandoff';
@@ -51,6 +51,8 @@ export default function MapView({photos,onOpenPhoto,focusPhotoId,active,location
  const fadeRef=useRef<HTMLDivElement>(null);
  const [ready,setReady]=useState(false),[error,setError]=useState(''),[day,setDay]=useState(''),[index,setIndex]=useState<number|null>(null),[playing,setPlaying]=useState(false);
  const [routesEnabled,setRoutesEnabled]=useState(false);
+ const [speed,setSpeed]=useState(3600);
+ const [tripAll,setTripAll]=useState(false);
   useEffect(()=>{
    if(!isTauri())return; // 浏览器回退模式:无后端,不再发起读取
    let live=true,changed=false;
@@ -180,6 +182,9 @@ export default function MapView({photos,onOpenPhoto,focusPhotoId,active,location
    map.addLayer({id:'route-glow',type:'line',source:'route',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':5,'line-blur':2,'line-opacity':0,'line-opacity-transition':{duration:420,delay:0}}});
    map.addLayer({id:'route',type:'line',source:'route',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':1.6,'line-opacity':0,'line-opacity-transition':{duration:420,delay:0}}});
    map.addLayer({id:'route-selected',type:'line',source:'route',filter:['==',['get','day'],''],layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':2.2,'line-opacity':0,'line-opacity-transition':{duration:420,delay:0}}});
+   // 行程播放：已走过的轨迹逐站点亮
+   map.addSource('route-done',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+   map.addLayer({id:'route-done',type:'line',source:'route-done',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':2.6,'line-blur':.4,'line-opacity':0,'line-opacity-transition':{duration:240,delay:0}}});
    // 城市边界是可选离线层；数据存在时自动启用，缺失不影响核心地球。
    void (async()=>{try{const cities=await loadMapAsset('china-cities') as {features:BoundaryFeature[]};if(!dead&&cities.features?.length){cityFeatures.current=cities.features;map.addSource('cn-cities',{type:'geojson',data:cities as never});map.addLayer({id:'cn-cities-hit',type:'fill',source:'cn-cities',minzoom:4.8,paint:{'fill-color':'#ffffff','fill-opacity':0}});map.addLayer({id:'cn-cities-line',type:'line',source:'cn-cities',minzoom:4.8,paint:{'line-color':'#657794','line-width':['interpolate',['linear'],['zoom'],5,.45,9,1.15],'line-opacity':.72}});for(const f of cities.features){const c=f.properties?.centroid??f.properties?.center;if(Array.isArray(c)&&c.length>=2&&f.properties?.name)addLabel(c[0],c[1],f.properties.name,'city');}map.on('mousemove','cn-cities-hit',e=>{const p=e.features?.[0]?.properties;setHoverPlace([p?.parentProvince,p?.name].filter(Boolean).join(' · '));});map.on('mouseleave','cn-cities-hit',()=>setHoverPlace(''));syncLabelZoom();}}catch{/* Optional detailed boundaries. */}})();
    map.on('click',e=>{if(!editRef.current)return;const next={lng:e.lngLat.lng,lat:e.lngLat.lat};setDraft(next);editMarker.current?.setLngLat([next.lng,next.lat]);});
@@ -200,12 +205,17 @@ export default function MapView({photos,onOpenPhoto,focusPhotoId,active,location
  },[ready,located]);
  useEffect(()=>{const map=mapRef.current;if(!ready||!map)return;(map.getSource('route') as GeoJSONSource).setData(connections);},[ready,connections]);
  useEffect(()=>{const map=mapRef.current;if(!ready||!map)return;map.setFilter('route-selected',['==',['get','day'],route?.day??'']);},[ready,route?.day]);
+useEffect(()=>{
+ const map=mapRef.current;if(!ready||!map||!route)return;
+ (map.getSource('route-done') as GeoJSONSource|undefined)?.setData(routeProgressGeometry(route,index===null?0:index+1));
+},[ready,route,index]);
  useEffect(()=>{
   const map=mapRef.current;if(!ready||!map)return;
   const visible=routesEnabled&&!locationEdit;
   map.setPaintProperty('route','line-opacity',visible?.55:0);
   map.setPaintProperty('route-glow','line-opacity',visible?.13:0);
   map.setPaintProperty('route-selected','line-opacity',visible?.85:0);
+  map.setPaintProperty('route-done','line-opacity',visible?.95:0);
  },[ready,routesEnabled,locationEdit]);
  // 重新显示时校正画布尺寸
  useEffect(()=>{
@@ -304,17 +314,33 @@ export default function MapView({photos,onOpenPhoto,focusPhotoId,active,location
    setNearbyKey(`site:${focusPhoto.gpsLon!.toFixed(4)}:${focusPhoto.gpsLat!.toFixed(4)}`);
    map.flyTo({center:[focusPhoto.gpsLon!,focusPhoto.gpsLat!],zoom:12.5,bearing:0,pitch:0,duration:1600,essential:true});
  },[active,ready,focusPhotoId,focusPhoto?.gpsLat,focusPhoto?.gpsLon,locationEdit]);
- useEffect(()=>{if(!selected)return;mapRef.current?.flyTo({center:[selected.gpsLon!,selected.gpsLat!],zoom:12,duration:1000});},[selected]);
- useEffect(()=>{if(!playing||!route)return;const timer=setTimeout(()=>{if(index!==null&&index+1<route.photos.length)setIndex(index+1);else setPlaying(false);},3200);return()=>clearTimeout(timer);},[playing,index,route]);
- const exit=()=>{setPlaying(false);setIndex(null);if(saved.current)mapRef.current?.easeTo({...saved.current,duration:700});saved.current=null;};
+useEffect(()=>{if(!selected)return;const map=mapRef.current;if(!map)return;
+  const arrive=Math.min(900,Math.round(speed*.3));
+  map.flyTo({center:[selected.gpsLon!,selected.gpsLat!],zoom:12,duration:arrive,essential:true});
+  // 停留期间缓慢推近，避免"跳一下然后静止"
+  const push=setTimeout(()=>map.easeTo({zoom:13.05,duration:Math.max(1200,speed-arrive),essential:true}),arrive+120);
+  return()=>clearTimeout(push);
+},[selected?.id,speed]);
+useEffect(()=>{if(!playing||!route)return;const timer=setTimeout(()=>{
+  if(index===null){setIndex(0);return;}
+  if(index+1<route.photos.length){setIndex(index+1);return;}
+  if(tripAll){
+    const at=routes.findIndex(r=>r.day===route.day);
+    const next=routes[at+1];
+    if(next){setDay(next.day);setIndex(0);return;}
+  }
+  setPlaying(false);
+},speed);return()=>clearTimeout(timer);},[playing,index,route,speed,tripAll,routes]);
+const exit=()=>{setPlaying(false);setIndex(null);setTripAll(false);if(saved.current)mapRef.current?.easeTo({...saved.current,duration:700});saved.current=null;};
  useEffect(()=>{if(!active)return;const key=(e:KeyboardEvent)=>{if((e.target as HTMLElement).matches?.('input,textarea,select'))return;if(e.key==='Escape'){if(wallKey)return;if(editRef.current)onLocationDone(false);else if(quickLocation)setQuickLocation(false);else exit();}};window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);},[active,onLocationDone,quickLocation,wallKey]); // eslint-disable-line react-hooks/exhaustive-deps
- const start=()=>{const map=mapRef.current;if(!map||!route)return;if(!saved.current)saved.current={center:map.getCenter(),zoom:map.getZoom(),bearing:map.getBearing(),pitch:map.getPitch()};setIndex(0);setPlaying(true);};
+ const start=()=>{const map=mapRef.current;if(!map||!route)return;setRoutesEnabled(true);if(!saved.current)saved.current={center:map.getCenter(),zoom:map.getZoom(),bearing:map.getBearing(),pitch:map.getPitch()};setIndex(0);setPlaying(true);};
+const startAll=()=>{if(!routes.length)return;const map=mapRef.current;setRoutesEnabled(true);if(map&&!saved.current)saved.current={center:map.getCenter(),zoom:map.getZoom(),bearing:map.getBearing(),pitch:map.getPitch()};setTripAll(true);setDay(routes[0].day);setIndex(0);setPlaying(true);};
  const globeCircle=()=>{const map=mapRef.current;if(!map)return null;const canvas=map.getCanvas(),center=map.project(map.getCenter());return{x:center.x,y:center.y,radius:maplibreRadiusForZoom(map.getZoom(),canvas.clientHeight,map.getCenter().lat)};};
  const saveLocation=async()=>{if(!draft||!locationEdit||savingLocation)return;setSavingLocation(true);setError('');try{await ipc.setPhotoLocation(locationEdit.photoId,draft.lat,draft.lng);await onLocationDone(true,place);}catch(e){setError(`位置保存失败：${e}`);}finally{setSavingLocation(false);}};
  const clearLocation=async()=>{if(!locationEdit||savingLocation)return;setSavingLocation(true);setError('');try{await ipc.setPhotoLocation(locationEdit.photoId,null,null);await onLocationDone(true);}catch(e){setError(`位置清除失败：${e}`);}finally{setSavingLocation(false);}};
  return <section ref={sectionRef} className={'memory-map'+(locationEdit?' is-location-edit':'')}><div ref={fadeRef} style={{position:'absolute',inset:0,opacity:0}}>{/* 容器内联定位:maplibregl-map 类会把它改写为 relative,导致高度塌陷 */}<div ref={host} className="map-canvas" style={{position:'absolute',inset:0}}/><InteractiveMapStarfield active={active} globeCircle={globeCircle}/><MapPhotoStacks map={ready?mapRef.current:null} groups={photoGroups} editable={quickLocation} disabled={!!locationEdit} onOpen={g=>setNearbyKey(g.key)} onWall={g=>{const key=g.provinceKey??g.key;if(provinceFeatures.current.some(p=>p.properties?.name===key)){exit();setNearbyKey(null);setWallKey(key);}}}/>{!locationEdit&&quickLocation&&<QuickLocationTray map={ready?mapRef.current:null} photos={unlocatedPhotos} groups={photoGroups} regionKey={(lng,lat)=>regionAt(lng,lat).key} onSaved={onPhotosChanged} onClose={()=>setQuickLocation(false)} active={active}/>}{locationEdit?<aside className="location-editor"><small>为这张照片寻找真实地点</small><h1>{locationEdit.lat!=null?"调整照片位置":"设置照片位置"}</h1><p>旋转并缩放地球，然后单击地点；标记出现后仍可拖动微调。</p><div className="location-readout">{draft?<><b>{place||'正在识别行政区域'}</b><span>{draft.lat.toFixed(5)}°, {draft.lng.toFixed(5)}°</span></>:<span>等待选点</span>}</div><div className="location-actions"><button className="pill-btn primary" disabled={!draft||savingLocation} onClick={saveLocation}>{savingLocation?"正在保存…":"保存位置"}</button><button className="pill-btn" onClick={()=>onLocationDone(false)}>取消 · ESC</button>{locationEdit.lat!=null&&<button className="pill-btn ghost-danger" disabled={savingLocation} onClick={clearLocation}>清除位置</button>}</div>{error&&<p>{error}</p>}</aside>:!quickLocation&&<aside className="map-journal"><small>走过的地方</small><h1>记忆地球</h1><p>{located.length} 张照片 · {routes.length} 个有坐标的日子{unlocated>0&&` · ${unlocated} 张待补充位置`}</p><button className="pill-btn primary map-quick-entry" onClick={()=>{exit();setNearbyKey(null);setQuickLocation(true);}}>快速设置位置 · {unlocated} 张待定位</button><p className="map-note">远看按省叠放 · 放大查看市区与拍摄点 · 双击展开照片墙</p><p className="map-note">同一天的照片以同色弧线相连 · 可在设置中关闭</p>{error&&<p>{error}</p>}
- {routes.length>0?<><p className="map-route-legend"><span style={{background:route?.color}}/> {route?.day} · {routesEnabled?'同日连线已开启':'同日连线已关闭'}</p><select aria-label="旅行日期" value={route?.day} onChange={e=>{exit();setDay(e.target.value);}}>{routes.map(r=><option key={r.day}>{r.day}</option>)}</select><button className="pill-btn" onClick={start}>播放这一天 →</button>
+ {routes.length>0?<><p className="map-route-legend"><span style={{background:route?.color}}/> {route?.day} · {routesEnabled?'同日连线已开启':'同日连线已关闭'}</p><select aria-label="旅行日期" value={route?.day} onChange={e=>{exit();setDay(e.target.value);}}>{routes.map(r=><option key={r.day}>{r.day}</option>)}</select><button className="pill-btn" onClick={()=>{setTripAll(false);start();}}>播放这一天 →</button>{routes.length>1&&<button className="pill-btn" onClick={startAll}>{tripAll&&playing?'正在连播全部行程':'连播全部行程 ▶'}</button>}
  <div className="route-stops">{route?.photos.map((p,i)=><button key={p.id} onClick={()=>{if(index===null)start();setPlaying(false);setIndex(i);}}><img src={tmThumb(p.id)} alt=""/><span>{p.captureDate?.slice(11,16)||'时间未知'}<small>{p.filename}</small></span></button>)}</div></>:<p className="map-empty">还没有带 GPS 的照片。可在照片详情手动指定坐标。</p>}
 
- </aside>}{!locationEdit&&nearby.length>0&&<aside className="map-nearby-panel"><div><span>此处的回忆 · {nearby.length} 张</span><button onClick={()=>setNearbyKey(null)} aria-label="收起此处照片">×</button></div><div className="map-nearby-grid">{nearby.map(p=><button key={p.id} className={p.id===focusPhotoId?"is-focused-photo":""} onPointerDown={e=>{if(quickLocation)startLocatedPhotoDrag(e.nativeEvent,p,e.currentTarget);}} onClick={e=>{if(!consumeLocationDragClick(e.currentTarget))onOpenPhoto(p.id,e.currentTarget);}} title={quickLocation?`${p.filename} · 拖回左侧取消定位`:p.filename}><img src={tmThumb(p.id)} alt={p.filename} loading="lazy"/></button>)}</div></aside>}{!locationEdit&&!quickLocation&&selected&&<div className="route-player"><img src={tmThumb(selected.id)} alt={selected.filename} onClick={()=>onOpenPhoto(selected.id)}/><div><small>{selected.captureDate}</small><p>{selected.filename}</p><div><button disabled={index===0} onClick={()=>{setPlaying(false);setIndex(i=>Math.max(0,(i??0)-1));}}>上一张</button><button onClick={()=>setPlaying(p=>!p)}>{playing?'暂停':'继续'}</button><button disabled={index===route!.photos.length-1} onClick={()=>{setPlaying(false);setIndex(i=>Math.min(route!.photos.length-1,(i??0)+1));}}>下一张</button><button onClick={exit}>退出播放</button></div></div></div>}{hoverPlace&&<div className="map-hover-place">{hoverPlace}</div>}<div className="map-crosshair" aria-hidden="true"/><div className="map-credit">Solar System Scope · CC BY 4.0 · 昼夜按当前时间 · 夜灯为地理分布模拟 · 拖动旋转 · 滚轮缩放</div></div>{wallGroup&&wallShape&&<ProvincePhotoWall key={wallGroup.key} name={wallGroup.name} shape={wallShape} districts={cityFeatures.current.filter(p=>p.properties?.parentProvince===wallKey)} photos={wallGroup.photos} onClose={()=>setWallKey(null)}/>}</section>;
+ </aside>}{!locationEdit&&nearby.length>0&&<aside className="map-nearby-panel"><div><span>此处的回忆 · {nearby.length} 张</span><button onClick={()=>setNearbyKey(null)} aria-label="收起此处照片">×</button></div><div className="map-nearby-grid">{nearby.map(p=><button key={p.id} className={p.id===focusPhotoId?"is-focused-photo":""} onPointerDown={e=>{if(quickLocation)startLocatedPhotoDrag(e.nativeEvent,p,e.currentTarget);}} onClick={e=>{if(!consumeLocationDragClick(e.currentTarget))onOpenPhoto(p.id,e.currentTarget);}} title={quickLocation?`${p.filename} · 拖回左侧取消定位`:p.filename}><img src={tmThumb(p.id)} alt={p.filename} loading="lazy"/></button>)}</div></aside>}{!locationEdit&&!quickLocation&&selected&&<div className="route-player"><img src={tmThumb(selected.id)} alt={selected.filename} onClick={()=>onOpenPhoto(selected.id)}/><div className="route-info"><small>{selected.captureDate}</small><p>{selected.filename}</p><div className="route-progress"><i style={{width:`${(((index??0)+1)/(route?.photos.length||1))*100}%`}}/></div><div className="route-meta"><span>第 {(index??0)+1} / {route?.photos.length??0} 站</span><label>每站<select value={speed} onChange={e=>setSpeed(Number(e.target.value))} aria-label="播放速度"><option value={2400}>2.4s</option><option value={3600}>3.6s</option><option value={5500}>5.5s</option></select></label>{tripAll&&<span className="route-mode">连播全部</span>}</div><div className="route-controls"><button disabled={index===0} onClick={()=>{setPlaying(false);setIndex(i=>Math.max(0,(i??0)-1));}}>上一张</button><button onClick={()=>setPlaying(p=>!p)}>{playing?'暂停':'继续'}</button><button disabled={index===(route?.photos.length??1)-1} onClick={()=>{setPlaying(false);setIndex(i=>Math.min((route?.photos.length??1)-1,(i??0)+1));}}>下一张</button><button onClick={exit}>退出播放</button></div></div></div>}{hoverPlace&&<div className="map-hover-place">{hoverPlace}</div>}<div className="map-crosshair" aria-hidden="true"/><div className="map-credit">Solar System Scope · CC BY 4.0 · 昼夜按当前时间 · 夜灯为地理分布模拟 · 拖动旋转 · 滚轮缩放</div></div>{wallGroup&&wallShape&&<ProvincePhotoWall key={wallGroup.key} name={wallGroup.name} shape={wallShape} districts={cityFeatures.current.filter(p=>p.properties?.parentProvince===wallKey)} photos={wallGroup.photos} onClose={()=>setWallKey(null)}/>}</section>;
 }

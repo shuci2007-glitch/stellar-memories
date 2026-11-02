@@ -16,7 +16,7 @@ import PhotoDetail from "./ui/PhotoDetail";
 import ImportOverlay from "./ui/ImportOverlay";
 import SettingsView from "./ui/SettingsView";
 import BackfillBar from "./ui/BackfillBar";
-import VideoPosterAgent from "./core/videoPoster";
+import Slideshow from "./ui/Slideshow";import VideoPosterAgent from "./core/videoPoster";
 import { SpaceBar } from "./ui/SpaceBar";
 import { shapeOf, type Space } from "./core/spaces";
 import { ToastProvider, useToast } from "./core/toast";
@@ -254,6 +254,7 @@ function Shell() {
   }, []);
   useEffect(()=>()=>{transition.current.cancel();},[]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [slideshowOpen, setSlideshowOpen] = useState(false);
   const [searchOpen,setSearchOpen]=useState(false);
   const changeSearch=useCallback((open:boolean)=>{setSearchOpen(open);if(open){setSettingsOpen(false);setImportMenu(false);}},[]);
 
@@ -753,6 +754,12 @@ function Shell() {
             onView={v=>{setMapReturn(null);returningPhoto.current=null;mapTarget.current=null;setLocationEdit(null);setAppView(s=>({...s,mapPhotoId:null}));changeView(v);}}
             onImport={() => {setSearchOpen(false);setSettingsOpen(false);setImportMenu(s=>!s);}}
             onSettings={() => {setSearchOpen(false);setImportMenu(false);setSettingsOpen(s=>!s);}}
+            onSlideshow={() => {
+              const list = allPhotos.length ? allPhotos : photos;
+              if (!list.length) { toast("还没有照片可以放映"); return; }
+              setSearchOpen(false); setSettingsOpen(false); setImportMenu(false);
+              setSlideshowOpen(true);
+            }}
             onOpenPhoto={openDetail}
           />
         )}
@@ -861,6 +868,13 @@ function Shell() {
           <LockScreen hasPassword={hasPassword} passwordless={passwordless} ready={authReady} leaving={lockLeaving} onSuccess={unlock} />
         )}
       </div>
+
+      {slideshowOpen && (
+        <Slideshow
+          photos={allPhotos.length ? allPhotos : photos}
+          onClose={() => setSlideshowOpen(false)}
+        />
+      )}
     </div>
   );
 }
