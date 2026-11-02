@@ -11,7 +11,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 REPO="shuci2007-glitch/stellar-memories"
 # 版本号唯一来源：tauri.conf.json（避免脚本与配置不一致，1.2.0 的旧坑）
-APP_VERSION="$(python3 -c "import json,sys;print(json.load(open('$ROOT/src-tauri/tauri.conf.json',encoding='utf-8'))['version'])")"
+# 用 sed 而非 python：Windows 版 python 读不了 Git Bash 的 /d/... 路径
+APP_VERSION="$(cd "$ROOT" && sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)"
+if [ -z "$APP_VERSION" ]; then
+  echo "ERROR: 无法从 tauri.conf.json 读取版本号" >&2
+  exit 1
+fi
 NSIS_DIR="$ROOT/src-tauri/target/release/bundle/nsis"
 OUT_DIR="$ROOT/release-v$APP_VERSION"
 # 安装包用 ASCII 名，GitHub 下载 URL 不需要百分号编码，跨工具更稳
