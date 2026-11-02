@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { SHAPES, DEFAULT_SHAPE, shapeOf } from '../src/core/spaces';
 
 describe('页面图形注册表', () => {
+  it('只保留 6 种形态，顺序固定', () => {
+    expect(SHAPES.map((s) => s.id)).toEqual([
+      'spiral', 'sphere', 'ring', 'saturn', 'golden', 'nebula',
+    ]);
+  });
+
   it('提供多个可切换图形且 id 唯一', () => {
     expect(SHAPES.length).toBeGreaterThanOrEqual(4);
     expect(new Set(SHAPES.map((s) => s.id)).size).toBe(SHAPES.length);
@@ -34,5 +40,14 @@ describe('页面图形注册表', () => {
     expect(shapeOf('not-a-shape').id).toBe(DEFAULT_SHAPE);
     expect(shapeOf(null).id).toBe(DEFAULT_SHAPE);
     expect(shapeOf(undefined).id).toBe(DEFAULT_SHAPE);
+  });
+
+  it('已移除的旧形态映射到保留形态', () => {
+    expect(shapeOf('knot').id).toBe('spiral');
+    expect(shapeOf('halo').id).toBe('ring');
+    expect(shapeOf('galaxy').id).toBe('spiral');
+    expect(shapeOf('imgalaxy').id).toBe('spiral');
+    expect(shapeOf('imgalaxyv').id).toBe('spiral');
+    expect(shapeOf('imgring').id).toBe('ring');
   });
 });
