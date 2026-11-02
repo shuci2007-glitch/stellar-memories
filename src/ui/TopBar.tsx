@@ -124,7 +124,7 @@ export default function TopBar({
         <div ref={panelRef} className="search-panel">
           <input
             ref={inputRef}
-            placeholder="搜索文件名、日期、标题、故事、相册、地点…"
+            placeholder="搜索文件名、日期、标题、故事、相册、地点、相机、镜头…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setSearchOpen(false)}

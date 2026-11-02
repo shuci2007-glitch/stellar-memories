@@ -825,8 +825,25 @@ fn get_timeline(state: State<AppState>, space_id: Option<i64>) -> Result<Vec<Tim
     Ok(rows.flatten().collect())
 }
 
-// ---------- 搜索 ----------
+/// 往年今天：月日与今天相同的历史照片（跨年）。用于「那年今日」回顾。
+#[tauri::command]
+fn get_on_this_day(state: State<AppState>) -> Result<Vec<models::Photo>, String> {
+    require_unlocked(&state)?;
+    let conn = state.db.0.lock();
+    let columns = PHOTO_COLS.split(',').map(|c| format!("p.{}", c.trim())).collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT {columns} FROM photos p
+         WHERE p.imported = 1 AND p.missing = 0 AND ({LIVE_MOTION_HIDE})
+           AND p.capture_date IS NOT NULL
+           AND substr(p.capture_date, 6, 5) = strftime('%m-%d','now','localtime')
+         ORDER BY p.capture_date DESC LIMIT 80"
+    );
+    let mut q = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = q.query_map([], row_to_photo).map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
 
+// ---------- 搜索 ----------
 #[tauri::command]
 fn search_photos(state: State<AppState>, query: String) -> Result<Vec<models::Photo>, String> {
     require_unlocked(&state)?;
@@ -846,6 +863,7 @@ fn search_photos(state: State<AppState>, query: String) -> Result<Vec<models::Ph
            p.filename LIKE ?1 ESCAPE '!' OR p.capture_date LIKE ?2 ESCAPE '!'
            OR m.title LIKE ?1 ESCAPE '!' OR m.text LIKE ?1 ESCAPE '!'
            OR m.location LIKE ?1 ESCAPE '!' OR m.mood LIKE ?1 ESCAPE '!'
+           OR p.camera LIKE ?1 ESCAPE '!' OR p.lens LIKE ?1 ESCAPE '!'
            OR al.name LIKE ?1 ESCAPE '!'
          ) ORDER BY p.capture_date DESC, p.id DESC LIMIT 200"
     );
@@ -1367,7 +1385,7 @@ pub fn run() {
             import_photos, cancel_import,
             list_photos, get_photo_full, save_memory, toggle_star, set_photo_date, set_photo_location,
             delete_photo, rescan_missing, get_stats,
-            get_timeline, search_photos,
+            get_timeline, get_on_this_day, search_photos,
             list_albums, save_album_galaxy, create_album, rename_album, set_album_description, delete_album, set_album_cover,
             get_connections, add_connection, remove_connection,
             get_galaxy_data,

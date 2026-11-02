@@ -123,6 +123,7 @@ export const ipc = {
   // 时间轴/搜索
   getTimeline: (spaceId?: number) =>
     invoke<TimelineItem[]>("get_timeline", { spaceId: spaceId ?? null }),
+  getOnThisDay: () => invoke<Photo[]>("get_on_this_day"),
   searchPhotos: (query: string) => invoke<Photo[]>("search_photos", { query }),
 
   // 相册

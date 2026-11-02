@@ -259,6 +259,7 @@ function Shell() {
 
   const [albums, setAlbums] = useState<Album[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
+  const [onThisDay, setOnThisDay] = useState<Photo[]>([]);
   const [allPhotos, setAllPhotos] = useState<Photo[]>([]);
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [spaceId, setSpaceId] = useState<number | null>(null);
@@ -334,18 +335,21 @@ function Shell() {
     if (!isTauri()) { setDataReady(true); return; }
     const sid = spaceRef.current;
     try {
-      const [a, p, g, c, all] = await Promise.all([
+      const [a, p, g, c, all, otd] = await Promise.all([
         ipc.listAlbums(),
         ipc.listPhotos(undefined, sid ?? undefined),
         ipc.getGalaxyData(sid ?? undefined),
         ipc.getConnections(),
         ipc.listPhotos(),
+        // 回顾数据失败不应拖垮整次刷新
+        ipc.getOnThisDay().catch(() => [] as Photo[]),
       ]);
       setAlbums(a);
       setPhotos(p);
       setGalaxyPhotos(g);
       setConnections(c);
       setAllPhotos(all);
+      setOnThisDay(otd);
       setDataReady(true);
     } catch (e) {
       toast(`数据加载失败: ${e}`);
@@ -447,6 +451,24 @@ function Shell() {
     setAppView(s=>({...s,detail:s.detail?.photo.id===id?null:s.detail,content:'overview',exiting:false,mapPhotoId:s.mapPhotoId===id?null:s.mapPhotoId}));
     toast("已从相册中删除，原文件保留");
   },[reload,toast]);
+
+  /** 时间轴批量删除：逐条走后端（每条都会清理关联表），最后统一刷新一次。 */
+  const onDeletePhotos = useCallback(async (ids: number[]) => {
+    for (const id of ids) {
+      try { await ipc.deletePhoto(id); } catch (e) { toast(`删除失败：${e}`); break; }
+    }
+    await reload();
+    toast(`已从相册删除 ${ids.length} 张记录，原文件保留`);
+  }, [reload, toast]);
+
+  /** 时间轴批量加星 / 取消星标。 */
+  const onStarPhotos = useCallback(async (ids: number[], starred: boolean) => {
+    for (const id of ids) {
+      try { await ipc.toggleStar(id, starred); } catch (e) { toast(`操作失败：${e}`); break; }
+    }
+    await reload();
+    toast(starred ? `已加星 ${ids.length} 张` : `已取消星标 ${ids.length} 张`);
+  }, [reload, toast]);
 
   const onPhotoStarFormed = useCallback((_id: number) => {
     setPhotoFormed(true);
@@ -690,7 +712,13 @@ function Shell() {
         />
         {stage === "ready" && visited.timeline && (
           <div style={{ position: "absolute", inset: 0, opacity: view === "timeline" && navPending === null ? 1 : 0, pointerEvents: view === "timeline" && navPending === null ? "auto" : "none", transition: "opacity 430ms ease" }}>
-            <TimelineView photos={photos} onOpenPhoto={openDetail} />
+            <TimelineView
+              photos={photos}
+              onThisDay={onThisDay}
+              onOpenPhoto={openDetail}
+              onDeletePhotos={onDeletePhotos}
+              onStarPhotos={onStarPhotos}
+            />
           </div>
         )}
         {stage === "ready" && visited.map && (
