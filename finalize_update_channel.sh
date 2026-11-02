@@ -47,7 +47,7 @@ URL="https://github.com/$REPO/releases/download/v${APP_VERSION}/${SETUP_NAME}"
 cat > "$OUT_DIR/update.json" <<EOF
 {
   "version": "$APP_VERSION",
-  "notes": "星辰相册 $APP_VERSION：转为纯本地版（移除云端相册）；新增时间轴批量整理与筛选、往年今天、全屏幻灯片放映、地图行程连播；安全与稳定性加固。",
+  "notes": "空间切换器精简为 6 种形态：旋臂星系、球状星云、环状、环带行星、金色光环、粒子星云；其余形态不再出现在切换器中（旧数据自动回退到最接近的形态）。",
   "pub_date": "$PUB_DATE",
   "platforms": {
     "windows-x86_64": {
