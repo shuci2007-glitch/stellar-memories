@@ -15,7 +15,6 @@ const MapView = lazy(() => import("./ui/MapView"));
 import PhotoDetail from "./ui/PhotoDetail";
 import ImportOverlay from "./ui/ImportOverlay";
 import SettingsView from "./ui/SettingsView";
-import CloudPanel from "./ui/CloudPanel";
 import BackfillBar from "./ui/BackfillBar";
 import VideoPosterAgent from "./core/videoPoster";
 import { SpaceBar } from "./ui/SpaceBar";
@@ -34,6 +33,14 @@ const DEMO_SPACES: import("./core/spaces").Space[] = [
   { id: 6, name: "环带行星",   shape: "saturn", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 5, photoCount: 0 },
   { id: 7, name: "金色光环",   shape: "golden", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 6, photoCount: 0 },
   { id: 8, name: "粒子星云",   shape: "nebula", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 7, photoCount: 0 },
+  // 来自三段参考视频的纯网格形态
+  { id: 9, name: "光带结",     shape: "knot",   scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 8, photoCount: 0 },
+  { id: 10, name: "同心光环",  shape: "halo",   scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 9, photoCount: 0 },
+  { id: 11, name: "螺旋星盘",  shape: "galaxy", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 10, photoCount: 0 },
+  // 由正面 2D 图反推的 3D 盘体
+  { id: 12, name: "星盘·图反推", shape: "imgalaxy", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 11, photoCount: 0 },
+  { id: 13, name: "光环·图反推", shape: "imgring", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 12, photoCount: 0 },
+  { id: 14, name: "星盘·视频帧反推", shape: "imgalaxyv", scope: "shared", backgroundPhotoId: null, backgroundStrength: 42, sortOrder: 13, photoCount: 0 },
 ];
 
 import { tmPreview } from "./core/types";
@@ -247,7 +254,6 @@ function Shell() {
   }, []);
   useEffect(()=>()=>{transition.current.cancel();},[]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [cloudOpen, setCloudOpen] = useState(false);
   const [searchOpen,setSearchOpen]=useState(false);
   const changeSearch=useCallback((open:boolean)=>{setSearchOpen(open);if(open){setSettingsOpen(false);setImportMenu(false);}},[]);
 
@@ -315,8 +321,6 @@ function Shell() {
     setLocationEdit(null);
     setMapReturn(null);returningPhoto.current=null;mapTarget.current=null;
     setSearchOpen(false);setImportMenu(false);
-    // 云端面板浮在锁屏之上，锁屏时必须一起关掉，否则本地锁形同虚设
-    setCloudOpen(false);
     setNavPending(null);
     setShelfPhase("traveling");
     setShelfFocus(null);
@@ -349,7 +353,7 @@ function Shell() {
   }, [toast]);
 
   // 任何来源的导入结束后都刷新本地数据。
-  // 从云端面板导入时不会挂 ImportOverlay，所以这里常驻监听一次。
+  // 从其他窗口/入口触发的导入不会挂 ImportOverlay，所以这里常驻监听一次。
   useEffect(() => {
     if (!authed) return;
     if (!isTauri()) return; // 浏览器回退模式:无导入事件监听
@@ -721,7 +725,6 @@ function Shell() {
             onView={v=>{setMapReturn(null);returningPhoto.current=null;mapTarget.current=null;setLocationEdit(null);setAppView(s=>({...s,mapPhotoId:null}));changeView(v);}}
             onImport={() => {setSearchOpen(false);setSettingsOpen(false);setImportMenu(s=>!s);}}
             onSettings={() => {setSearchOpen(false);setImportMenu(false);setSettingsOpen(s=>!s);}}
-            onCloud={() => {setSearchOpen(false);setImportMenu(false);setSettingsOpen(false);setCloudOpen(true);}}
             onOpenPhoto={openDetail}
           />
         )}
@@ -830,8 +833,6 @@ function Shell() {
           <LockScreen hasPassword={hasPassword} passwordless={passwordless} ready={authReady} leaving={lockLeaving} onSuccess={unlock} />
         )}
       </div>
-
-      {cloudOpen && <CloudPanel onClose={() => setCloudOpen(false)} />}
     </div>
   );
 }

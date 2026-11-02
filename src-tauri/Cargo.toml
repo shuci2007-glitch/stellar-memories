@@ -20,9 +20,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-updater = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "charset"] }
-base64 = "0.22"
 axum = { version = "0.8", features = ["tokio"] }
+futures-util = "0.3"
 tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 filetime = "0.2"
@@ -66,4 +65,5 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+# 不使用 panic = "abort"：导入/解码是不可信输入的重灾区，unwind 能让后台线程
+# 单次失败而不必整个进程退出；abort 还会让所有 unwrap_or 之类"忽略错误"的设计失效。

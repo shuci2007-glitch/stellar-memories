@@ -59,15 +59,68 @@ pub fn change_password(db: &Db, old: &str, new: &str) -> Result<(), String> {
 }
 
 pub fn verify_and_unlock(db: &Db, unlocked: &std::sync::atomic::AtomicBool, pwd: &str) -> bool {
-    let (h,no_password) = {
+    use std::sync::atomic::Ordering;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let (h, no_password, fails, locked_until) = {
         let conn = db.0.lock();
-        (db::get_setting(&conn, "password_hash"),db::get_setting(&conn, "password_mode").as_deref()==Some("none"))
+        (
+            db::get_setting(&conn, "password_hash"),
+            db::get_setting(&conn, "password_mode").as_deref() == Some("none"),
+            db::get_setting(&conn, "verify_fail_count")
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(0),
+            db::get_setting(&conn, "verify_locked_until")
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0),
+        )
     };
+
+    // 连续失败后的指数退避。口令最短只要求 4 位，没有限速时 1 万种组合几分钟就能穷举；
+    // 加上退避后同样的尝试需要数小时，且每次错误都在 settings 里留痕。
+    if !no_password && now < locked_until {
+        return false;
+    }
+
     // A click in password-free mode still unlocks the backend session. A fresh
     // installation is distinct: it must first finish the existing setup flow.
-    let ok = no_password || h.as_ref().is_some_and(|h|verify(pwd,h));
+    let ok = no_password || h.as_ref().is_some_and(|h| verify(pwd, h));
+
+    {
+        let conn = db.0.lock();
+        if ok {
+            let _ = conn.execute(
+                "DELETE FROM settings WHERE key IN ('verify_fail_count','verify_locked_until')",
+                [],
+            );
+        } else {
+            let next = fails.saturating_add(1);
+            let backoff = match next {
+                0..=4 => 0,
+                5 => 1,
+                6 => 2,
+                7 => 5,
+                8 => 10,
+                _ => 30,
+            };
+            let _ = conn.execute(
+                "INSERT INTO settings(key,value) VALUES('verify_fail_count',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [next.to_string()],
+            );
+            if backoff > 0 {
+                let _ = conn.execute(
+                    "INSERT INTO settings(key,value) VALUES('verify_locked_until',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    [(now + backoff).to_string()],
+                );
+            }
+        }
+    }
+
     if ok {
-        unlocked.store(true, std::sync::atomic::Ordering::SeqCst);
+        unlocked.store(true, Ordering::SeqCst);
     }
     ok
 }

@@ -564,7 +564,10 @@ input { user-select: text; cursor: text; }
 /* ---------- 星团标签(3D overlay) ---------- */
 .cluster-label {
   position: absolute;
+  left: 0;
+  top: 0;
   transform: translate(-50%, -50%);
+  will-change: transform;
   pointer-events: none;
   text-align: center;
   z-index: 20;
@@ -974,6 +977,13 @@ html[data-wallpaper="1"], html[data-wallpaper="1"] body { background:#06070A; ov
 .shape-option .dot[data-shape="saturn"] { background:radial-gradient(circle at 35% 30%,#9ec9ff,#33507f); box-shadow:0 0 0 1px #a9bdff; }
 .shape-option .dot[data-shape="golden"] { background:radial-gradient(circle at 35% 30%,#ffe0a8,#8a5a22); }
 .shape-option .dot[data-shape="nebula"] { background:radial-gradient(circle at 40% 35%,#e5c4ff,#6b4bb0); }
+/* 视频参考重建的三种纯网格形态 */
+.shape-option .dot[data-shape="knot"] { background:linear-gradient(135deg,#bfe9ff 0 40%,#ffffff 55%,#ff9f7a 100%); }
+.shape-option .dot[data-shape="halo"] { background:radial-gradient(circle,#ffe6b0 0 22%,#c98a3c 24% 46%,#3a2a14 48% 62%,#ffcf82 64% 70%,#1a1408 72%); }
+.shape-option .dot[data-shape="galaxy"] { background:radial-gradient(circle at 50% 50%,#ffffff 0 16%,#6fe3ff 26%,#2f7bff 46%,#0a1e6b 70%,#050a26 100%); }
+.shape-option .dot[data-shape="imgalaxy"] { background:radial-gradient(circle at 38% 34%,#0d0f1c 0 30%,#5aa3d4 40%,#b9e9f3 55%,#123a63 75%); }
+.shape-option .dot[data-shape="imgalaxyv"] { background:radial-gradient(circle at 40% 36%,#dff6ff 0 14%,#57e1fc 34%,#1e263e 62%,#0a1020 100%); }
+.shape-option .dot[data-shape="imgring"] { background:radial-gradient(circle,#f7e6c0 0 18%,transparent 20% 46%,#f7e6c0 48% 58%,#8a5a22 62%); }
 .space-editor .actions, .photo-picker .actions { display:flex; justify-content:flex-end; gap:10px; }
 .space-editor .bg-thumb { width:44px; height:44px; object-fit:cover; border-radius:8px; }
 .space-editor .neb-row { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }

@@ -82,7 +82,9 @@ fn find_tiff_offset(buf: &[u8]) -> Option<usize> {
         for i in 0..buf.len() - 6 {
             if &buf[i..i + 6] == b"Exif\0\0" {
                 let p = i + 6;
-                if is_tiff_head(buf.get(p..p + 4)?) {
+                // 注意不能用 `?`：buf 末尾附近出现 "Exif\0\0" 时越界会直接返回 None，
+                // 把后面"裸 TIFF 头"的兜底扫描整段跳过，表现为部分 HEIC 拿不到拍摄时间。
+                if buf.get(p..p + 4).is_some_and(is_tiff_head) {
                     return Some(p);
                 }
             }

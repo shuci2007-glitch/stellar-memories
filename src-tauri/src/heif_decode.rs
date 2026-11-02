@@ -37,10 +37,16 @@ const HEIF_COLORSPACE_RGB: c_int = 1;
 const HEIF_CHROMA_INTERLEAVED_RGBA: c_int = 11;
 const HEIF_CHANNEL_INTERLEAVED: c_int = 10;
 
+// 与 heif.h 的 C 布局对齐：`uint8_t version; uint8_t ignore_transformations; ...`
+// 原实现把 version 声明成 c_int，使 ignore_transformations 落在偏移 4（padding），
+// 写 1 实际不生效 —— 表现为 libheif 与 EXIF 各旋转一次，带方向标记的 iPhone 照片被转两遍。
+#[allow(dead_code)]
 #[repr(C)]
 struct DecodingOptions {
-    _version: c_int,
+    version: u8,
     ignore_transformations: u8,
+    /// 其余字段是函数指针，这里不访问；仅占位保证前两个字节的偏移正确。
+    _rest: [u8; 62],
 }
 
 #[allow(non_snake_case)]
@@ -160,6 +166,8 @@ fn load_lib() -> Option<LibHeif> {
         let heif_context_free = fnptr!(sym(handle, b"heif_context_free\0"), unsafe extern "system" fn(*mut HeifContext));
 
         // 任一关键符号缺失都视为不可用,交给上层回退。
+        // 注意：所有会被调用的符号都必须检查 —— 空函数指针一旦调用就是跳转到 0x0，
+        // 进程直接 Access Violation（不可捕获），"失败会回退系统解码器"的承诺就不成立了。
         if heif_init as usize == 0
             || heif_context_alloc as usize == 0
             || heif_context_read_from_memory_without_copy as usize == 0
@@ -168,6 +176,11 @@ fn load_lib() -> Option<LibHeif> {
             || heif_image_get_plane_readonly as usize == 0
             || heif_decoding_options_alloc as usize == 0
             || heif_context_free as usize == 0
+            || heif_image_handle_release as usize == 0
+            || heif_image_release as usize == 0
+            || heif_image_get_width as usize == 0
+            || heif_image_get_height as usize == 0
+            || heif_decoding_options_free as usize == 0
         {
             return None;
         }
@@ -274,8 +287,25 @@ unsafe fn decode_inner(
         return Err("取像素平面失败".into());
     }
 
-    // 拷贝 RGBA(每行 stride 可能含对齐填充,只取有效 width*4)
+    // 宽高来自解码器（外部输入）：错误码被 `as u32` 转成约 42 亿后，
+    // `w*h*4` 会尝试分配 TB 级内存；stride 小于行宽时下面还会越界读。
+    const MAX_PIXELS: u64 = 100_000_000;
+    let (wu, hu) = (w as u64, h as u64);
     let row_bytes = w as usize * 4;
+    if wu == 0 || hu == 0 || wu > 65_535 || hu > 65_535 || wu.saturating_mul(hu) > MAX_PIXELS {
+        (lib.heif_image_release)(img);
+        (lib.heif_image_handle_release)(handle);
+        (lib.heif_context_free)(ctx);
+        return Err(format!("HEIC 尺寸异常({w}x{h})"));
+    }
+    if stride < row_bytes {
+        (lib.heif_image_release)(img);
+        (lib.heif_image_handle_release)(handle);
+        (lib.heif_context_free)(ctx);
+        return Err("HEIC 行跨度异常".into());
+    }
+
+    // 拷贝 RGBA(每行 stride 可能含对齐填充,只取有效 width*4)
     let mut out = Vec::with_capacity(w as usize * h as usize * 4);
     for y in 0..h as usize {
         let src = ptr.add(y * stride);

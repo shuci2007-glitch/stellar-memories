@@ -14,7 +14,10 @@ export class CameraRig {
     Object.assign(this.controls, {enableDamping:true, dampingFactor:0.12, autoRotate:false, enableZoom:false, enableRotate:true, enablePan:true, rotateSpeed:0.55, minDistance:6, maxDistance:620, minPolarAngle:0.18, maxPolarAngle:Math.PI-0.18});
     this.controls.mouseButtons.LEFT = -1 as THREE.MOUSE;
     this.controls.mouseButtons.MIDDLE = THREE.MOUSE.DOLLY;
-    this.controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
+    // 右键拖动 = 环绕观察整个宇宙空间。
+    // 原先是 PAN（平移），平移只会挪动画面中心，透视关系不变，看起来像"宇宙不动"；
+    // 改成 ROTATE 后右键能绕场景转一圈，星野产生真实的视差。左键留给"活动图像"。
+    this.controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
     this.controls.addEventListener('start', this.cancel);
     canvas.addEventListener('wheel', this.wheel, {passive:false});
     this.controls.update();
@@ -50,7 +53,9 @@ export class CameraRig {
       this.camera.position.lerpVectors(f.from,f.to,e); this.controls.target.lerpVectors(f.fromTarget,f.target,e);
       if(t===1) this.flight=null;
     } else if(this.desiredDistance!==null) {
-      const current=this.getRadius(); const next=THREE.MathUtils.lerp(current,this.desiredDistance,1-Math.exp(-dt*14));
+      // 相机与 target 重合时 getRadius() 为 0 → next/current 产生 Infinity/NaN，
+      // 相机位置会被永久污染。这里给半径加下限。
+      const current=Math.max(1e-3,this.getRadius()); const next=THREE.MathUtils.lerp(current,this.desiredDistance,1-Math.exp(-dt*14));
       this.camera.position.sub(this.controls.target).multiplyScalar(next/current).add(this.controls.target);
       if(Math.abs(next-this.desiredDistance)<0.005) this.desiredDistance=null;
     }

@@ -32,9 +32,30 @@ pub struct ImportControl {
     pub cancel: AtomicBool,
 }
 
-fn collect_files(root: &Path, out: &mut Vec<ScanFile>) {
+/// 递归收集可导入文件。
+///
+/// 三重保护（Windows 上必踩的坑）：
+/// 1. `symlink_metadata` 判类型，**不跟随** reparse point / 目录联接，
+///    否则 `AppData\Local\Application Data → 自身` 这类联接会无限递归爆栈；
+/// 2. 深度上限 + 已访问目录集合双重去环；
+/// 3. 文件条数上限，避免误选整个磁盘时把内存吃满。
+fn collect_files(
+    root: &Path,
+    depth: usize,
+    seen: &mut std::collections::HashSet<std::path::PathBuf>,
+    out: &mut Vec<ScanFile>,
+) {
+    const MAX_DEPTH: usize = 48;
+    const MAX_FILES: usize = 200_000;
+    if depth > MAX_DEPTH || out.len() >= MAX_FILES {
+        return;
+    }
+    let Ok(meta) = std::fs::symlink_metadata(root) else { return };
+    if meta.file_type().is_symlink() {
+        return;
+    }
     // 单文件直接入队(支持拖入单张照片)
-    if root.is_file() {
+    if meta.is_file() {
         if thumbs::is_supported(root) || thumbs::is_video(root) || thumbs::heic_accepted(root) {
             out.push(ScanFile { path: root.to_string_lossy().into_owned(), unsupported: false });
         } else if thumbs::is_known_unsupported(root) {
@@ -42,11 +63,19 @@ fn collect_files(root: &Path, out: &mut Vec<ScanFile>) {
         }
         return;
     }
+    if !meta.is_dir() {
+        return;
+    }
+    if let Ok(canon) = std::fs::canonicalize(root) {
+        if !seen.insert(canon) {
+            return; // 环
+        }
+    }
     let Ok(entries) = std::fs::read_dir(root) else { return };
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            collect_files(&p, out);
+            collect_files(&p, depth + 1, seen, out);
         } else if thumbs::is_supported(&p) || thumbs::is_video(&p) || thumbs::heic_accepted(&p) {
             out.push(ScanFile { path: p.to_string_lossy().into_owned(), unsupported: false });
         } else if thumbs::is_known_unsupported(&p) {
@@ -99,8 +128,9 @@ fn run_import(
     // 1. 扫描
     let mut files: Vec<ScanFile> = Vec::new();
     let skipped_unsupported = Arc::new(Mutex::new(0u32));
+    let mut seen_dirs = std::collections::HashSet::new();
     for root in &roots {
-        collect_files(Path::new(root), &mut files);
+        collect_files(Path::new(root), 0, &mut seen_dirs, &mut files);
     }
     let total = files.len() as u32;
 
@@ -194,7 +224,9 @@ fn run_import(
         let conn = db.0.lock();
         crate::db::get_setting(&conn, "import_batch_limit")
             .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| *v > 0)
+            // 上限收敛到 200：该键可被 set_setting 写入，放任超大值会让 rayon 同时
+            // 解码数千张大图，内存直接打爆。
+            .map(|v| v.clamp(1, 200))
             .unwrap_or(40)
     };
     let head_len = limit.min(pending.len());
@@ -451,25 +483,25 @@ pub fn build_auto_connections(db: &Db, photo_ids: &[i64]) {
     };
     for &id in photo_ids {
         let Some(ref d0) = date_of(id) else { continue };
-        let Ok(dt0) = chrono::NaiveDate::parse_from_str(&d0[0..10.min(d0.len())], "%Y-%m-%d") else { continue };
+        // 不能按字节切：capture_date 可能来自相册包的任意字符串，第 10 个字节
+        // 落在多字节字符中间时 `&d0[0..10]` 会 panic（release 下 panic=abort 直接杀进程）。
+        let head0: String = d0.chars().take(10).collect();
+        let Ok(dt0) = chrono::NaiveDate::parse_from_str(&head0, "%Y-%m-%d") else { continue };
 
         // 候选:有日期的相邻照片(时间接近)+ 同相册
         let mut cands: Vec<(i64, f64)> = Vec::new();
-        let mut q = conn
-            .prepare(
-                "SELECT id, capture_date FROM photos
-                 WHERE id != ?1 AND imported = 1 AND capture_date IS NOT NULL
-                 ORDER BY ABS(julianday(capture_date) - julianday(?2)) LIMIT 24",
-            )
-            .unwrap();
-        let rows = q
-            .query_map(rusqlite::params![id, d0], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-            })
-            .unwrap();
+        let Ok(mut q) = conn.prepare(
+            "SELECT id, capture_date FROM photos
+             WHERE id != ?1 AND imported = 1 AND capture_date IS NOT NULL
+             ORDER BY ABS(julianday(capture_date) - julianday(?2)) LIMIT 24",
+        ) else { continue };
+        let Ok(rows) = q.query_map(rusqlite::params![id, d0], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        }) else { continue };
         for row in rows.flatten() {
             let (other, d1) = row;
-            let Ok(dt1) = chrono::NaiveDate::parse_from_str(&d1[0..10.min(d1.len())], "%Y-%m-%d")
+            let head1: String = d1.chars().take(10).collect();
+            let Ok(dt1) = chrono::NaiveDate::parse_from_str(&head1, "%Y-%m-%d")
             else { continue };
             let days = (dt1 - dt0).num_days().abs();
             let s = if days == 0 {
@@ -485,23 +517,24 @@ pub fn build_auto_connections(db: &Db, photo_ids: &[i64]) {
         }
         // 同相册加分
         let albums: Vec<i64> = {
-            let mut q = conn
+            let Ok(mut q) = conn
                 .prepare("SELECT album_id FROM album_photos WHERE photo_id=?1")
-                .unwrap();
-            q.query_map([id], |r| r.get(0))
-                .unwrap()
-                .flatten()
-                .collect()
+            else { continue };
+            let mut out: Vec<i64> = Vec::new();
+            if let Ok(rows) = q.query_map([id], |r| r.get::<_, i64>(0)) {
+                out.extend(rows.flatten());
+            }
+            out
         };
         if !albums.is_empty() {
             for (other, s) in cands.iter_mut() {
                     let shared: bool = {
                         let o = *other;
-                        let mut q = conn
+                        let Ok(mut q) = conn
                             .prepare(
                                 "SELECT 1 FROM album_photos WHERE photo_id=?1 AND album_id IN (SELECT album_id FROM album_photos WHERE photo_id=?2) LIMIT 1",
                             )
-                            .unwrap();
+                        else { continue };
                         q.query_row(rusqlite::params![o, id], |_| Ok(true)).unwrap_or(false)
                     };
                 if shared {

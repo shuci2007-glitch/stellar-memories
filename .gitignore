@@ -19,6 +19,8 @@ src-tauri/gen/
 .venv/
 output/
 reference/
+release-v1.3.0/
+.release/
 .playwright-cli/
 scripts/terrain-cache/
 # 边界数据随安装包分发:世界轮廓为公有领域 Natural Earth,

@@ -5,6 +5,16 @@ import { tmPhoto, tmThumb, tmVideo, type Photo, type Memory } from '../core/type
 import { useToast } from '../core/toast';
 import ParticleDetailCanvas from './ParticleDetailCanvas';
 import OpeningPhotoPreview from './OpeningPhotoPreview';
+
+/**
+ * 只保留末两级目录。
+ * 完整绝对路径含 Windows 用户名与私有目录命名，截图/录屏/投屏时会连带泄露。
+ */
+function maskPath(p: string): string {
+  const parts = p.split(/[\\/]+/).filter(Boolean);
+  return parts.length <= 2 ? p : `…\\${parts.slice(-2).join("\\")}`;
+}
+
 /** 照片详情:默认保留为可交互粒子画面,由侧栏显式切换原图。 */
 export default function PhotoDetail({photo,memory,onMemoryChanged,onClose,onNav,exiting,onAlbum,onEditLocation,source,onClosed,sphereTransition=false,originalFirst=false,onDeleted}:{onDeleted:(id:number)=>Promise<void>; originalFirst?:boolean;sphereTransition?:boolean;photo:Photo;memory:Memory;onMemoryChanged:()=>void;onClose:()=>void;onNav:(dir:1|-1)=>void;exiting:boolean;onAlbum:()=>void;onEditLocation:()=>void;source:HTMLElement|null;onClosed:()=>void; }) {
  const bridgeRef=useRef(sphereTransition ? getSpherePhotoBridge(photo.id) : undefined);
@@ -262,7 +272,7 @@ export default function PhotoDetail({photo,memory,onMemoryChanged,onClose,onNav,
             </button>
             {showExif && (
               <div style={{ fontSize: "var(--f-xs)", color: "var(--tx-3)", lineHeight: 2 }}>
-                <div style={{overflowWrap:"anywhere",userSelect:"text"}}>原图位置 · {photo.path}</div>
+                <div style={{overflowWrap:"anywhere",userSelect:"text"}}>原图位置 · {maskPath(photo.path)}</div>
                 {photo.camera && <div>相机 · {photo.camera}</div>}
                 {photo.lens && <div>镜头 · {photo.lens}</div>}
                 {(photo.focal || photo.aperture || photo.shutter || photo.iso) && (

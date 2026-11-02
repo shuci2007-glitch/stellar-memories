@@ -9,7 +9,6 @@ export default function TopBar({
   onImport,
   onSettings,
   onOpenPhoto,
-  onCloud,
   searchOpen, onSearchChange,
 }: {
   searchOpen: boolean;
@@ -19,7 +18,6 @@ export default function TopBar({
   onImport: () => void;
   onSettings: () => void;
   onOpenPhoto: (id: number) => void;
-  onCloud: () => void;
 }) {
   const setSearchOpen = onSearchChange;
   const panelRef = useRef<HTMLDivElement>(null);
@@ -107,16 +105,6 @@ export default function TopBar({
         <button className="icon-btn" title="导入照片" onClick={onImport}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-          </svg>
-        </button>
-        <button className="icon-btn" title="云端相册" onClick={onCloud}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-            <path
-              d="M7.2 18.5h9.4a3.6 3.6 0 0 0 .5-7.16A5.6 5.6 0 0 0 6.4 10.2a3.9 3.9 0 0 0 .8 8.3Z"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinejoin="round"
-            />
           </svg>
         </button>
         <button className="icon-btn" title="设置" onClick={onSettings}>

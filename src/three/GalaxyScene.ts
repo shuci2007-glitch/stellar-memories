@@ -101,6 +101,32 @@ export type JourneyEvent =
 
 const GALAXY_CORE = new THREE.Vector3(0, -13, 0); // Astra 主银河的中心(视觉核心)
 const GALAXY_VIEW_TARGET = new THREE.Vector3(0, -13, 0); // 全景相机对准 Astra 真实亮核
+
+/**
+ * 轻量数据指纹：替代 JSON.stringify。
+ * 每次数据刷新都序列化全量照片（5000 张含标题/相机字段可达数 MB）会造成 20~80ms 主线程卡顿，
+ * 这里改成逐字段混入 32 位哈希：O(数据量) 但不分配中间字符串。
+ */
+function hashSceneData(value: unknown): number {
+  let h = 0;
+  const mix = (n: number) => { h = (Math.imul(h, 31) + (n | 0)) | 0; };
+  const walk = (x: unknown): void => {
+    if (x === null || x === undefined) { mix(0); return; }
+    switch (typeof x) {
+      case "number": mix(Math.round(x * 1000)); return;
+      case "boolean": mix(x ? 1 : 2); return;
+      case "string": mix(x.length); for (let i = 0; i < x.length; i++) mix(x.charCodeAt(i)); return;
+      default: break;
+    }
+    if (Array.isArray(x)) { mix(x.length + 7); for (const item of x) walk(item); return; }
+    const obj = x as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    mix(keys.length + 11);
+    for (const k of keys) { mix(k.length); walk(obj[k]); }
+  };
+  walk(value);
+  return h;
+}
 /** 地球是 Astra 内部沿偏心轨道运行的小星球，不占据亮核本体。 */
 const EARTH_RADIUS = 1.8;
 const EARTH_ORBIT_X = 52;
@@ -145,6 +171,13 @@ export class GalaxyScene {
   private lineMat!: THREE.ShaderMaterial;
   private lines!: THREE.LineSegments;
   private edgeList: { a: number; b: number; strength: number }[] = [];
+
+  /** 图反推天体的推荐取景距离（盘半径 170/170/130，默认视距 172 会钻进盘里） */
+  private static readonly IMAGE_BODY_VIEW: Record<string, number> = {
+    imgalaxy: 365,
+    imgalaxyv: 365,
+    imgring: 285,
+  };
 
   private worker: Worker | null = null;
   private positions: Float32Array | null = null;
@@ -811,8 +844,7 @@ export class GalaxyScene {
         n.labelEl.style.opacity = "0";
         continue;
       }
-      n.labelEl.style.left = `${((v.x + 1) / 2) * w}px`;
-      n.labelEl.style.top = `${((-v.y + 1) / 2) * h}px`;
+      n.labelEl.style.transform = `translate3d(${((v.x + 1) / 2) * w}px, ${((-v.y + 1) / 2) * h}px, 0) translate(-50%, -50%)`;
       n.labelEl.style.opacity = `${scale * 0.92}`;
     }
   }
@@ -891,8 +923,11 @@ export class GalaxyScene {
           entry.proxy.scale.setScalar(this.photoSphereSettings.radius * entry.sphere.points.scale.x / 2.55);
           entry.proxy.updateMatrixWorld(true);
           entry.sphere.setOpacity((0.44 + detail * 0.38) * zoomVisibility * this.photoBackdrop);
-          entry.sphere.update(dt, this.time);
-          entry.sphere.points.visible = zoomVisibility * this.photoBackdrop > .001 && focusId !== c.id;
+          // 不可见的球不要更新：PhotoParticleSphere.update 会做三趟 O(n) 循环
+          // （最多 2.8 万粒子），26 个球叠起来单帧就是几十万次三角函数。
+          const sphereVisible = zoomVisibility * this.photoBackdrop > .001 && focusId !== c.id;
+          entry.sphere.points.visible = sphereVisible;
+          if (sphereVisible) entry.sphere.update(dt, this.time);
         }
         entry.proxy.visible = !!entry.sphere && zoomVisibility > .15 && this.photoBackdrop > .15 && !this.photoFocusActive && focusId !== c.id;
       }
@@ -935,6 +970,12 @@ export class GalaxyScene {
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setClearColor(0x000000, 0);
+    // HDR 输出必须配合色调映射：UnrealBloomPass + OutputPass 的标准搭档。
+    // 不设 toneMapping 时任何 >1 的片元会直接被裁成纯白（星盘"白瓷化"的根因）。
+    // 用 Neutral（Khronos PBR Neutral）而非 ACES：ACES 会把高亮饱和色去色成白，
+    // 而星系需要保留蓝/金等高饱和色，Neutral 在压住 HDR 的同时保住色相。
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
 
     this.rig = new CameraRig(canvas.clientWidth / Math.max(1, canvas.clientHeight), canvas);
     this.rig.controls.enabled = false; // 锁定态:散星不可拖动
@@ -1070,7 +1111,7 @@ export class GalaxyScene {
   /** 载入数据并布置星团 */
   setData(photos: GalaxyPhoto[], albums: Album[], connections: Connection[]) {
     // 名称和展示配置保存后复用正在显示的球，不重新生成场景。
-    const signature = JSON.stringify([photos, [...albums].sort((a,b)=>a.id-b.id).map(a=>[a.id,a.photoIds]), connections]);
+    const signature = `${hashSceneData(photos)}:${hashSceneData([...albums].sort((a,b)=>a.id-b.id).map(a=>[a.id,a.photoIds]))}:${hashSceneData(connections)}`;
     this.lastData = [photos, albums, connections];
     const preserveAlbumDraft=this.albumCommitPending;
     this.albumCommitPending=false;
@@ -1552,6 +1593,10 @@ export class GalaxyScene {
     this.syncBody();
     this.syncShapeDust();
     this.applyShapeLook();
+    // 图像反推天体的盘半径（170 / 130）远大于常规天体（约 96），沿用默认 ~172 的
+    // 视距会让相机贴在盘面上、整屏只剩一片糊。这里按形态给专用取景距离。
+    const viewDistance = GalaxyScene.IMAGE_BODY_VIEW[id];
+    if (viewDistance) this.rig.flyTo(GALAXY_VIEW_TARGET.clone(), viewDistance, 700);
     if (this.lastData) {
       // 照片集合可能没变,必须强制重建一次才能把布局换掉
       this.sceneDataSignature = "";
@@ -1572,6 +1617,20 @@ export class GalaxyScene {
       this.starfield?.applyShape(null);
       this.starfield?.setLook(null, 1);
       this.galaxyFadeTarget = 1;
+      return;
+    }
+    // 光带结 / 同心光环 / 螺旋星盘 的主视觉是自带网格天体。这里不能让星野按
+    // layout 重排 —— 那等于用星点把图案再描一遍，既重复又违背「不用粒子渲染」
+    // 的前提。保持自然星空作为背景即可。
+    // 图反推的三种（imgalaxy / imgring / imgalaxyv）同样是自带网格天体，
+    // 漏掉会把星野重排成同形点云，与实心盘体叠成"双层盘面"重影。
+    if (
+      shape.id === "knot" || shape.id === "halo" || shape.id === "galaxy" ||
+      shape.id === "imgalaxy" || shape.id === "imgring" || shape.id === "imgalaxyv"
+    ) {
+      this.starfield?.applyShape(null);
+      this.starfield?.setLook(null, 1);
+      this.galaxyFadeTarget = 0;
       return;
     }
     this.starfield?.applyShape(shape.layout);
@@ -1835,7 +1894,12 @@ export class GalaxyScene {
       this.dustPoints = null;
     }
     this.cardMat.dispose();
+    // EffectComposer.dispose() 不会遍历 passes：UnrealBloom 自己持有 11 张渲染目标，
+    // 不逐个 dispose 会在退出/StrictMode 双挂载时整批泄漏显存。
+    this.composer?.passes.forEach((pass) => pass.dispose?.());
     this.composer?.dispose();
+    // 只 dispose 不丢上下文，WebView 的 16 个 WebGL context 上限会被逐渐耗尽。
+    this.renderer?.forceContextLoss();
     this.renderer?.dispose();
     this.scene.clear();
   }
@@ -1844,6 +1908,9 @@ export class GalaxyScene {
     if (!this.renderer || !this.canvas) return;
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
+    // 0×0（窗口最小化 / 首帧 / 切页瞬间）会把 aspect 置 0，投影矩阵出现 Infinity、
+    // 画面永久花屏。尺寸无效时直接跳过，保留上一帧的正确矩阵。
+    if (w < 2 || h < 2) return;
     this.renderer.setSize(w, h, false);
     this.composer?.setSize(w,h);
     this.backdrop?.resize(w,h);
@@ -2028,11 +2095,19 @@ export class GalaxyScene {
       n.velocity.multiplyScalar(Math.exp(-2.1 * step));
     }
     // 提前减速避让，接近时只移除相向速度，不产生碰撞弹跳。
-    for (let i = 0; i < nodes.length; i++) {
-      const a = nodes[i];
-      for (let j = i + 1; j < nodes.length; j++) {
-        const b = nodes[j];
-        if (a.albumId !== b.albumId) continue;
+    // 按 albumId 分桶：只有同相册的照片才可能互撞。原先对所有节点做 O(n²)，
+    // 其中绝大多数配对因 albumId 不同被 continue 掉，20 相册 × 50 张就是 50 万次空转。
+    const buckets = new Map<number, typeof nodes>();
+    for (const n of nodes) {
+      const list = buckets.get(n.albumId);
+      if (list) list.push(n);
+      else buckets.set(n.albumId, [n]);
+    }
+    for (const group of buckets.values()) {
+      for (let i = 0; i < group.length; i++) {
+        const a = group[i];
+        for (let j = i + 1; j < group.length; j++) {
+          const b = group[j];
         delta.copy(a.root.position).sub(b.root.position);
         const distance = delta.length();
         if (distance >= clearance + .7) continue;
@@ -2048,6 +2123,7 @@ export class GalaxyScene {
           const push = (clearance - distance) * step * 1.5;
           a.velocity.addScaledVector(delta, push);
           b.velocity.addScaledVector(delta, -push);
+        }
         }
       }
     }
@@ -2508,7 +2584,9 @@ export class GalaxyScene {
     this.starfield.setGentleInteraction(this.universe!=='locked');
     // 所有图形(星系 / 点云形态 / 照片星)跟随宇宙自旋;空闲时也缓慢自转,保持"活着"的动态。
     this.tickUniverseSpin(dt);
-    this.starfield.setSpin(this.universeSpin);
+    // 注意：这里必须用 combinedSpin（= universeSpin × shapeSpin），
+    // 直接写 universeSpin 会把 tickUniverseSpin 刚设置好的形态自旋覆盖掉。
+    this.starfield.setSpin(this.combinedSpin);
     this.starfield.update(dt, this.time, this.rig.camera);
     this.starfield.setOpacity((journeyDestination === "earth" || this.place === "earth") ? Math.max(c.stars, 0.78) : c.stars);
     this.backdrop.update(this.time);
@@ -2706,8 +2784,9 @@ export class GalaxyScene {
         c.labelEl.style.opacity = "0";
         continue;
       }
-      c.labelEl.style.left = `${((v.x + 1) / 2) * w}px`;
-      c.labelEl.style.top = `${((-v.y + 1) / 2) * h}px`;
+      // 用 transform 定位而不是 left/top：后者每帧都会让浏览器重排，
+      // 10~30 个标签 × 每帧 2 个布局属性是 60fps 掉到 45fps 的典型原因。
+      c.labelEl.style.transform = `translate3d(${((v.x + 1) / 2) * w}px, ${((-v.y + 1) / 2) * h}px, 0) translate(-50%, -50%)`;
       c.labelEl.style.opacity = `${scale * 0.9 * this.photoBackdrop}`;
       c.labelEl.style.pointerEvents=this.photoBackdrop>.9?"auto":"none";c.labelEl.tabIndex=this.photoBackdrop>.9?0:-1;
     }

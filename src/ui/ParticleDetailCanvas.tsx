@@ -296,6 +296,7 @@ export default function ParticleDetailCanvas({ photoId, active, onReady, fit100,
         root.remove(particles.points);
         particles.dispose();
       }
+      renderer.forceContextLoss();
       renderer.dispose();
       original?.geometry.dispose(); original?.material.dispose(); texture?.dispose();
       textureBitmap?.close(); morph.dispose(); blackHole.dispose();

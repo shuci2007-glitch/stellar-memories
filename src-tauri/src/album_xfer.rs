@@ -250,16 +250,25 @@ pub fn import_album(
 
     // 收集导出照片完整路径,建立 旧id -> 导出文件路径
     let photos_dir = export_folder.join("photos");
+    // 安全：manifest.json 来自外部（别人分享的相册包），`file` 字段直接 join 会被
+    // "../.." 穿越到磁盘任意位置。先解出真实目录，再对每个文件 canonicalize 并校验前缀。
+    let photos_base = std::fs::canonicalize(&photos_dir)
+        .map_err(|_| "导出包的照片目录无效".to_string())?;
     let mut paths: Vec<String> = Vec::new();
     let mut old_to_file: HashMap<i64, String> = HashMap::new();
     if let Some(arr) = v["photos"].as_array() {
         for ph in arr {
             if let (Some(id), Some(file)) = (ph["id"].as_i64(), ph["file"].as_str()) {
-                let full = photos_dir.join(file);
-                if full.exists() {
-                    paths.push(full.to_string_lossy().to_string());
-                    old_to_file.insert(id, full.to_string_lossy().to_string());
+                // 导出格式固定为 `<id>.<ext>`：拒绝任何路径分隔符与上跳
+                if file.contains('/') || file.contains('\\') || file.contains("..") {
+                    continue;
                 }
+                let Ok(full) = std::fs::canonicalize(photos_base.join(file)) else { continue };
+                if !full.starts_with(&photos_base) || !full.is_file() {
+                    continue;
+                }
+                paths.push(full.to_string_lossy().to_string());
+                old_to_file.insert(id, full.to_string_lossy().to_string());
             }
         }
     }

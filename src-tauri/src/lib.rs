@@ -173,8 +173,23 @@ fn save_video_poster(state: State<AppState>, id: i64, bytes: Vec<u8>) -> Result<
     if bytes.len() > 4 * 1024 * 1024 {
         return Err("封面图过大".into());
     }
+    // 先确认这确实是一条视频记录，再落盘。
+    // 原实现先写 thumbs/{id}.jpg 再执行带 kind='video' 的 UPDATE：SQL 挡住了数据库，
+    // 但任意 id（含普通照片）的缩略图文件已经先被覆盖了，且无法恢复。
+    {
+        let conn = state.db.0.lock();
+        let kind: Option<String> = conn
+            .query_row("SELECT kind FROM photos WHERE id=?1", [id], |r| r.get(0))
+            .ok();
+        if kind.as_deref() != Some("video") {
+            return Err("照片不存在或不是视频".into());
+        }
+    }
     let path = state.data_dir.join("thumbs").join(format!("{id}.jpg"));
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    // 先写 .part 再 rename：避免写到一半留下半张坏图
+    let tmp = path.with_extension("jpg.part");
+    std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
     let conn = state.db.0.lock();
     conn.execute(
         "UPDATE photos SET thumb_path=?1, processed=1, updated_at=datetime('now','localtime') WHERE id=?2 AND kind='video'",
@@ -1358,121 +1373,9 @@ pub fn run() {
             get_galaxy_data,
             export_backup_cmd, import_backup_cmd, check_for_update,
             export_album_cmd, import_album_cmd,
-            cloud_request,
-            cloud_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[derive(serde::Serialize)]
-struct CloudResponse {
-    status: u16,
-    headers: Vec<(String, String)>,
-    body: String,
-}
-
-static CLOUD_HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-
-fn cloud_http() -> &'static reqwest::Client {
-    CLOUD_HTTP.get_or_init(|| {
-        reqwest::Client::builder()
-            .build()
-            .expect("failed to build cloud http client")
-    })
-}
-
-/// 桌面端访问云端 API。
-///
-/// 云服务端做**精确 Origin 校验**，而 webview 的 `Headers` 会丢弃 `Origin`
-/// （Fetch 规范里的 forbidden request header），所以必须由 Rust 侧发请求并显式带上官方
-/// Origin，才能与网页端的行为完全一致。
-#[tauri::command]
-async fn cloud_request(
-    method: String,
-    url: String,
-    headers: Vec<(String, String)>,
-    body: Option<String>,
-    body_base64: Option<String>,
-) -> Result<CloudResponse, String> {
-    let m = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
-    let mut req = cloud_http().request(m, &url);
-    for (k, v) in headers {
-        req = req.header(k, v);
-    }
-    if let Some(b) = body {
-        req = req.body(b);
-    } else if let Some(b64) = body_base64 {
-        use base64::Engine as _;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64.as_bytes())
-            .map_err(|e| e.to_string())?;
-        req = req.body(bytes);
-    }
-    let res = req.send().await.map_err(|e| e.to_string())?;
-    let status = res.status().as_u16();
-    let hs: Vec<(String, String)> = res
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
-    let text = res.text().await.map_err(|e| e.to_string())?;
-    Ok(CloudResponse {
-        status,
-        headers: hs,
-        body: text,
-    })
-}
-
-/// 下载云端文件到本地（供导入本地库使用）。
-/// 同一 storage_path 永远映射到同一文件名，便于 import 按 path 去重。
-#[tauri::command]
-async fn cloud_download(
-    state: State<'_, AppState>,
-    url: String,
-    storage_path: String,
-) -> Result<String, String> {
-    require_unlocked(&state)?;
-    use std::hash::{Hash, Hasher};
-
-    let dir = state.data_dir.join("cloud");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-
-    let ext = storage_path
-        .rsplit('.')
-        .next()
-        .filter(|s| !s.is_empty() && s.len() <= 5 && s.chars().all(|c| c.is_ascii_alphanumeric()))
-        .unwrap_or("bin")
-        .to_lowercase();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    storage_path.hash(&mut hasher);
-    let stem = format!("{:016x}", hasher.finish());
-    let dest = dir.join(format!("{}.{}", stem, ext));
-    let part = dir.join(format!("{}.{}.part", stem, ext));
-
-    // 已下载过：确认不是上次中断留下的空文件
-    if dest.exists() {
-        let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-        if size > 0 {
-            return Ok(dest.to_string_lossy().to_string());
-        }
-        let _ = std::fs::remove_file(&dest);
-    }
-
-    let res = cloud_http().get(&url).send().await.map_err(|e| e.to_string())?;
-    let status = res.status();
-    if !status.is_success() {
-        return Err(format!("下载失败：HTTP {}", status.as_u16()));
-    }
-    let bytes = res.bytes().await.map_err(|e| e.to_string())?;
-    if bytes.is_empty() {
-        return Err("下载内容为空，请重试".into());
-    }
-    // 先写 .part 再原子改名，避免中断后留下"看起来已完成"的残缺文件
-    std::fs::write(&part, &bytes).map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_file(&dest);
-    std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
-    Ok(dest.to_string_lossy().to_string())
 }
 
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {

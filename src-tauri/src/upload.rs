@@ -6,15 +6,18 @@
 
 use crate::db::Db;
 use crate::import::{self, ImportControl};
-use axum::body::Bytes;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
+use axum::body::Body;
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use parking_lot::Mutex;
+use futures_util::StreamExt;
 use rand::RngCore;
 use serde::Serialize;
+use std::io::Write as _;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -24,6 +27,12 @@ use tauri::AppHandle;
 
 /// 单文件上限 200MB:照片足够,也容纳得下实况照片的动态片段与较长视频。
 const MAX_FILE: usize = 200 * 1024 * 1024;
+/// 单次会话的配额：防止拿到 token 的客户端把目标盘写满。
+const MAX_SESSION_FILES: u32 = 2000;
+const MAX_SESSION_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// 同时解析的请求体上限。axum 的 `Bytes` 提取器会把整个 body 读进内存，
+/// 200MB × N 并发足以直接 OOM，因此只放行 2 路。
+const MAX_CONCURRENT_UPLOADS: usize = 2;
 /// 无任何上传动作时长的上限,到点自动关闭,避免服务被遗忘在后台。
 const IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -41,6 +50,8 @@ pub struct UploadSession {
     pub last_name: Mutex<Option<String>>,
     pub last_activity: Mutex<Instant>,
     pub stopper: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// 上传请求的并发闸门（在读取 body 之前获取）
+    pub upload_slots: tokio::sync::Semaphore,
 }
 
 impl UploadSession {
@@ -140,20 +151,30 @@ fn sanitize_name(raw: &str) -> Option<String> {
 }
 
 /// 同目录重名时追加 _1 / _2,绝不覆盖已有照片。
-fn unique_path(dir: &FsPath, name: &str) -> PathBuf {
-    let candidate = dir.join(name);
-    if !candidate.exists() {
-        return candidate;
-    }
+///
+/// 用 `create_new` 原子抢占文件名：原先「先 exists() 再 write」是典型 TOCTOU，
+/// 两台手机同时传同名文件（iPhone 连拍很常见）会双双判定"不存在"，后写者覆盖前者。
+fn create_unique(dir: &FsPath, name: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
+    use std::fs::OpenOptions;
     let cut = name.rfind('.').unwrap_or(name.len());
     let (stem, ext) = name.split_at(cut);
+    let mut candidates: Vec<PathBuf> = vec![dir.join(name)];
     for i in 1..10_000u32 {
-        let next = dir.join(format!("{stem}_{i}{ext}"));
-        if !next.exists() {
-            return next;
+        candidates.push(dir.join(format!("{stem}_{i}{ext}")));
+    }
+    candidates.push(dir.join(format!("{stem}_{}{ext}", random_token())));
+    let mut last_err = None;
+    for candidate in candidates {
+        match OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(file) => return Ok((candidate, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                last_err = Some(e);
+                break;
+            }
         }
     }
-    dir.join(format!("{stem}_{}{ext}", random_token()))
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("无法创建文件")))
 }
 
 fn html_page() -> Html<&'static str> {
@@ -169,6 +190,7 @@ fn unauthorized() -> Response {
 }
 
 pub fn router(session: Arc<UploadSession>) -> Router {
+    let limiter_state = session.clone();
     Router::new()
         .route("/u/{token}", get(page))
         .route("/u/{token}/file", post(upload_file))
@@ -176,7 +198,29 @@ pub fn router(session: Arc<UploadSession>) -> Router {
         .route("/u/{token}/done", post(done))
         .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
         .layer(DefaultBodyLimit::max(MAX_FILE))
+        .layer(from_fn_with_state(limiter_state, limit_upload_concurrency))
         .with_state(session)
+}
+
+/// 在读取请求体**之前**限制并发。`Bytes` 提取器会把整个 body 读进内存，
+/// 不设闸门时 N × 200MB 并发就能把进程直接打爆。
+async fn limit_upload_concurrency(
+    State(s): State<Arc<UploadSession>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let is_upload = req.uri().path().ends_with("/file");
+    let permit = if is_upload {
+        match s.upload_slots.try_acquire() {
+            Ok(p) => Some(p),
+            Err(_) => return json_err(StatusCode::TOO_MANY_REQUESTS, "上一张还在接收，请稍候"),
+        }
+    } else {
+        None
+    };
+    let res = next.run(req).await;
+    drop(permit);
+    res
 }
 
 async fn page(State(s): State<Arc<UploadSession>>, Path(token): Path<String>) -> Response {
@@ -204,7 +248,7 @@ async fn upload_file(
     Path(token): Path<String>,
     Query(q): Query<FileQuery>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    body: Bytes,
+    body: Body,
 ) -> Response {
     if !token_eq(&token, &s.token) {
         return unauthorized();
@@ -214,9 +258,6 @@ async fn upload_file(
     }
     if !is_lan(peer.ip()) {
         return json_err(StatusCode::FORBIDDEN, "只接受局域网内的上传");
-    }
-    if body.is_empty() {
-        return json_err(StatusCode::BAD_REQUEST, "空文件");
     }
     let Some(raw_name) = q.name.as_deref() else {
         return json_err(StatusCode::BAD_REQUEST, "缺少文件名");
@@ -228,9 +269,64 @@ async fn upload_file(
         );
     };
 
-    let path = unique_path(&s.target, &name);
-    if let Err(e) = std::fs::write(&path, &body) {
+    // 会话配额（先按已有累计值拦一次，单文件超限在流式接收中再拦）
+    if s.count.load(Ordering::Relaxed) >= MAX_SESSION_FILES
+        || s.bytes.load(Ordering::Relaxed) > MAX_SESSION_BYTES
+    {
+        return json_err(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "本次上传已达上限，请结束本轮后重新扫码",
+        );
+    }
+
+    let (path, mut file) = match create_unique(&s.target, &name) {
+        Ok(v) => v,
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("写入失败: {e}")),
+    };
+
+    // 边收边写：请求体不再整块驻留内存，单文件上限在流式循环里强制。
+    let mut written: u64 = 0;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(bytes) = chunk else {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return json_err(StatusCode::BAD_REQUEST, "上传中断");
+        };
+        written = written.saturating_add(bytes.len() as u64);
+        if written > MAX_FILE as u64 {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return json_err(StatusCode::PAYLOAD_TOO_LARGE, "文件超过 200MB");
+        }
+        if let Err(e) = file.write_all(&bytes) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return json_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("写入失败: {e}"));
+        }
+    }
+    if written == 0 {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return json_err(StatusCode::BAD_REQUEST, "空文件");
+    }
+    if let Err(e) = file.flush() {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
         return json_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("写入失败: {e}"));
+    }
+    drop(file);
+
+    if s.bytes
+        .load(Ordering::Relaxed)
+        .saturating_add(written)
+        > MAX_SESSION_BYTES
+    {
+        let _ = std::fs::remove_file(&path);
+        return json_err(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "本次上传已达上限，请结束本轮后重新扫码",
+        );
     }
     // 用手机端记录的修改时间回填 mtime:没有 EXIF 的照片靠它落到拍摄当天。
     if let Some(ts) = q.ts.filter(|v| *v > 0) {
@@ -242,7 +338,7 @@ async fn upload_file(
 
     s.saved.lock().push(path.to_string_lossy().into_owned());
     s.count.fetch_add(1, Ordering::Relaxed);
-    s.bytes.fetch_add(body.len() as u64, Ordering::Relaxed);
+    s.bytes.fetch_add(written, Ordering::Relaxed);
     *s.last_name.lock() = Some(name.clone());
     s.touch();
 
@@ -316,6 +412,7 @@ pub async fn start(
         last_name: Mutex::new(None),
         last_activity: Mutex::new(Instant::now()),
         stopper: Mutex::new(None),
+        upload_slots: tokio::sync::Semaphore::new(MAX_CONCURRENT_UPLOADS),
     });
 
     let (port_tx, port_rx) = tokio::sync::oneshot::channel::<Result<u16, String>>();
@@ -324,7 +421,10 @@ pub async fn start(
 
     let serve_session = session.clone();
     tauri::async_runtime::spawn(async move {
-        let listener = match tokio::net::TcpListener::bind(("0.0.0.0", 0u16)).await {
+        // 优先只绑定当前局域网网卡，而不是 0.0.0.0：虚拟网卡 / 端口映射才不会把
+        // 这个临时上传服务暴露到预期之外的网络。取不到局域网地址时才退回全接口。
+        let bind_ip = lan_ip().map(IpAddr::V4).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        let listener = match tokio::net::TcpListener::bind((bind_ip, 0u16)).await {
             Ok(l) => l,
             Err(e) => {
                 let _ = port_tx.send(Err(format!("无法监听端口: {e}")));
@@ -432,7 +532,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sm-upload-test-{}", random_token()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.jpg"), b"x").unwrap();
-        let next = unique_path(&dir, "a.jpg");
+        let next = create_unique(&dir, "a.jpg").unwrap().0;
         assert_eq!(next.file_name().unwrap(), "a_1.jpg");
         std::fs::remove_dir_all(&dir).ok();
     }
