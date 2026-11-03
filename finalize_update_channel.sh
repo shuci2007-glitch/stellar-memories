@@ -47,7 +47,7 @@ URL="https://github.com/$REPO/releases/download/v${APP_VERSION}/${SETUP_NAME}"
 cat > "$OUT_DIR/update.json" <<EOF
 {
   "version": "$APP_VERSION",
-  "notes": "空间切换器精简为 6 种形态：旋臂星系、球状星云、环状、环带行星、金色光环、粒子星云；其余形态不再出现在切换器中（旧数据自动回退到最接近的形态）。",
+  "notes": "支持安卓/华为「动态照片」实况：自动识别照片里内嵌的视频，时间轴「实况」可筛选，原图上方一点即播。幻灯片里视频与实况会完整播放到结尾再切页，Ken Burns 动画也走完；时间轴新增「放映」按钮，直接放映当前筛选结果。",
   "pub_date": "$PUB_DATE",
   "platforms": {
     "windows-x86_64": {
