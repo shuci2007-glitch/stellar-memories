@@ -12,12 +12,15 @@ export function SpaceBar({
   onSelect,
   onReload,
   allPhotos,
+  onBrowse,
 }: {
   spaces: Space[];
   activeId: number | null;
   onSelect: (id: number) => void;
   onReload: () => void;
   allPhotos: Photo[];
+  /** 打开「这个星系的全部照片」网格 */
+  onBrowse?: () => void;
 }) {
   const [editing, setEditing] = useState<Space | null>(null);
   const toast = useToast();
@@ -76,6 +79,15 @@ export function SpaceBar({
             {s.name}
           </button>
         ))}
+        {isTauri() && active && onBrowse && (
+          <button
+            className="space-chip browse"
+            onClick={onBrowse}
+            title={`查看「${active.name}」的全部照片（${active.photoCount} 张）`}
+          >
+            全部照片
+          </button>
+        )}
         {isTauri() && (
           <button className="space-chip add" onClick={() => void create()} title="新建页面">
             +

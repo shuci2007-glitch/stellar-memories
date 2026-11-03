@@ -725,6 +725,29 @@ button:active { transform:scale(.98); }
 .route-controls button { padding:0; color:#c9d0db; }
 .route-controls button:hover:not(:disabled) { color:#fff; }
 
+/* ---------- 星系全部照片 ---------- */
+.galaxy-gallery {
+  position: fixed; inset: 36px 0 0; z-index: 44;
+  display: flex; flex-direction: column;
+  background: rgba(6,9,15,.95); backdrop-filter: blur(10px);
+}
+.gg-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 26px 36px 16px; }
+.gg-head small { font-size: 9px; letter-spacing: .2em; color: #8190a3; }
+.gg-head h2 { font-size: 26px; font-weight: 300; margin: 10px 0 6px; }
+.gg-meta { font-size: 12px; color: #8f9bab; margin: 0; }
+.gg-actions { display: flex; gap: 10px; flex: none; }
+.gg-grid {
+  flex: 1; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 10px; padding: 0 36px 30px;
+}
+.gg-item { position: relative; aspect-ratio: 1 / 1; border-radius: 8px; overflow: hidden; background: #0b0f16; padding: 0; cursor: pointer; }
+.gg-item img { width: 100%; height: 100%; object-fit: cover; transition: transform .3s ease; }
+.gg-item:hover img { transform: scale(1.04); }
+.gg-date { position: absolute; left: 8px; bottom: 6px; font-size: 10px; color: #e2e9f5; text-shadow: 0 1px 4px rgba(0,0,0,.9); letter-spacing: .04em; }
+.gg-empty { flex: 1; display: flex; align-items: center; justify-content: center; color: #76839a; font-size: 13px; }
+.space-chip.browse { letter-spacing: .08em; font-size: 11px; color: #aab8cc; }
+
 /* ---------- 时间轴页内播放 ---------- */
 .tl-player {
   position: fixed; inset: 0; z-index: 45;

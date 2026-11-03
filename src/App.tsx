@@ -17,6 +17,7 @@ import ImportOverlay from "./ui/ImportOverlay";
 import SettingsView from "./ui/SettingsView";
 import BackfillBar from "./ui/BackfillBar";
 import Slideshow, { type SlidePhoto } from "./ui/Slideshow";import VideoPosterAgent from "./core/videoPoster";
+import GalaxyGallery from "./ui/GalaxyGallery";
 import { SpaceBar } from "./ui/SpaceBar";
 import { shapeOf, type Space } from "./core/spaces";
 import { ToastProvider, useToast } from "./core/toast";
@@ -268,6 +269,8 @@ function Shell() {
   useEffect(()=>()=>{transition.current.cancel();},[]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [slideshowOpen, setSlideshowOpen] = useState(false);
+  /** 宇宙页「这个星系的全部照片」网格 */
+  const [galleryOpen, setGalleryOpen] = useState(false);
   /** 从时间轴发起的放映：用当前筛选结果，而不是全库。 */
   const [slideshowPhotos, setSlideshowPhotos] = useState<SlidePhoto[] | null>(null);
   const [searchOpen,setSearchOpen]=useState(false);
@@ -790,6 +793,23 @@ function Shell() {
               void reload();
             }}
             allPhotos={allPhotos}
+            onBrowse={() => {
+              setSearchOpen(false);
+              setImportMenu(false);
+              setGalleryOpen(true);
+            }}
+          />
+        )}
+
+        {galleryOpen && stage === "ready" && view === "galaxy" && (
+          <GalaxyGallery
+            spaceName={activeSpace?.name ?? "主星系"}
+            photos={photos}
+            onClose={() => setGalleryOpen(false)}
+            onOpenPhoto={(id) => {
+              setGalleryOpen(false);
+              openDetail(id);
+            }}
           />
         )}
 

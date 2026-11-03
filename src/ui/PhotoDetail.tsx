@@ -102,13 +102,20 @@ export default function PhotoDetail({photo,memory,onMemoryChanged,onClose,onNav,
  const [showExif,setShowExif]=useState(false);
  const [displayMode,setDisplayMode]=useState<'particle'|'original'>(originalFirst?'original':'particle');
  const [livePlaying,setLivePlaying]=useState(false);
+ const liveVideoRef=useRef<HTMLVideoElement>(null);
  const [form,setForm]=useState({title:memory.title??'',text:memory.text??'',location:memory.location??'',mood:memory.mood??'',date:photo.captureDate?.slice(0,10)??''});
  const [starred,setStarred]=useState(photo.starred);
  const toast=useToast();
  useEffect(()=>setDisplayMode(originalFirst?'original':'particle'),[photo.id,originalFirst]);
- // 换照片时停掉上一张的实况播放，避免视频挂在下一张图上。
- useEffect(()=>{setLivePlaying(false);},[photo.id]);
- useEffect(()=>{if(photo.liveVideoId==null)setLivePlaying(false);},[photo.liveVideoId]);
+ // 实况照片打开即播，不再要求手动点；播完停在最后一帧，不回静帧。
+ useEffect(()=>{setLivePlaying(photo.liveVideoId!=null);},[photo.id,photo.liveVideoId]);
+ // 自动播放可能被 WebView 的播放策略拦，拦了就静音再试一次。
+ useEffect(()=>{
+   const el=liveVideoRef.current;
+   if(!el||!livePlaying)return;
+   const p=el.play();
+   if(p&&typeof p.catch==='function')p.catch(()=>{el.muted=true;void el.play().catch(()=>{});});
+ },[livePlaying,photo.id]);
  const [originalLoaded,setOriginalLoaded]=useState(false);
  useEffect(()=>setError(''),[photo.id]);
  useEffect(()=>{
@@ -174,13 +181,13 @@ export default function PhotoDetail({photo,memory,onMemoryChanged,onClose,onNav,
         )}
         {photo.liveVideoId != null && !deleting && livePlaying && (
           <video
+            ref={liveVideoRef}
             className="detail-video live-video"
             src={tmVideo(photo.liveVideoId)}
             poster={tmThumb(photo.id)}
             autoPlay
             controls
             playsInline
-            onEnded={() => setLivePlaying(false)}
             onError={() => {
               setLivePlaying(false);
               toast("这段实况无法播放：系统可能缺少 HEVC 视频解码器");
