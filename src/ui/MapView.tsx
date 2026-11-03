@@ -166,35 +166,45 @@ export default function MapView({photos,onOpenPhoto,focusPhotoId,active,location
 
   map.on('load',async()=> {
    if(dead)return;
-   disposeSurface=installEarthMapSurface(map);
-   map.dragRotate.disable();map.touchZoomRotate.enable({around:"center"});map.touchZoomRotate.disableRotation();map.scrollZoom.enable({around:"center"});
-   map.setSky({'sky-color':'#050810','horizon-color':'#0d1522','sky-horizon-blend':0.6,
-    'atmosphere-blend':['interpolate',['linear'],['zoom'],0,0.6,4,0.25,6,0]});
+   // 任何一步失败都不能阻断就绪：否则 ready 永远是 false，切进来只会看到空白。
+   try{disposeSurface=installEarthMapSurface(map);}catch(e){console.warn('地球表面图层安装失败',e);}
+   try{
+    map.dragRotate.disable();map.touchZoomRotate.enable({around:"center"});map.touchZoomRotate.disableRotation();map.scrollZoom.enable({around:"center"});
+    map.setSky({'sky-color':'#050810','horizon-color':'#0d1522','sky-horizon-blend':0.6,
+     'atmosphere-blend':['interpolate',['linear'],['zoom'],0,0.6,4,0.25,6,0]});
+   }catch(e){console.warn('地图交互设置失败',e);}
    // 省级名称标注(来自边界数据自带的 centroid,离线)
    // 世界轮廓来自内置公有领域数据,离线可用;中国省界需在线获取。
-   void loadMapAsset('earth-boundaries').then(data=>{if(!dead)(map.getSource('land') as GeoJSONSource).setData(data);}).catch(()=>{});
+   void loadMapAsset('earth-boundaries').then(data=>{if(!dead)(map.getSource('land') as GeoJSONSource|undefined)?.setData(data);}).catch(()=>{});
+   // 省界是增强内容，绝不能挡住「地图就绪」——否则切进来会长时间空白、交接也完不成。
+   void (async()=>{
+    try{
+     const cn=await provincesPromise;
+     if(dead)return;
+     (map.getSource('cn') as GeoJSONSource|undefined)?.setData(cn as never);
+     provinceFeatures.current=cn.features;
+     for(const f of cn.features){const c=f.properties?.centroid;if(Array.isArray(c)&&c.length>=2)addLabel(c[0],c[1],f.properties.name,'province');}
+     syncLabelZoom();
+    }catch{setError('中国省界下载失败，已显示世界轮廓；联网后重新进入地图即可加载省界与照片墙。');}
+   })();
    try{
-    const cn=await provincesPromise;
-    if(dead)return;
-    (map.getSource('cn') as GeoJSONSource).setData(cn as never);
-    provinceFeatures.current=cn.features;
-    for(const f of cn.features){const c=f.properties?.centroid;if(Array.isArray(c)&&c.length>=2)addLabel(c[0],c[1],f.properties.name,'province');}
-    syncLabelZoom();
-   }catch{setError('中国省界下载失败，已显示世界轮廓；联网后重新进入地图即可加载省界与照片墙。');}
-   map.addSource('memories',{type:'geojson',data:{type:'FeatureCollection',features:[]},cluster:true,clusterRadius:48,clusterMaxZoom:14});
-   map.addLayer({id:'clusters',type:'circle',source:'memories',filter:['has','point_count'],paint:{'circle-color':'#b3bfce','circle-opacity':0,'circle-radius':['interpolate',['linear'],['get','point_count'],2,7,100,15,1000,20]}});
-   map.addLayer({id:'photos',type:'circle',source:'memories',filter:['!', ['has','point_count']],paint:{'circle-color':'#e0e5ed','circle-opacity':0,'circle-radius':4,'circle-stroke-color':'#7f91a8','circle-stroke-opacity':0,'circle-stroke-width':2}});
-   map.addSource('route',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
-   map.addLayer({id:'route-glow',type:'line',source:'route',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':5,'line-blur':2,'line-opacity':0,'line-opacity-transition':{duration:420,delay:0}}});
-   map.addLayer({id:'route',type:'line',source:'route',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':1.6,'line-opacity':0,'line-opacity-transition':{duration:420,delay:0}}});
-   map.addLayer({id:'route-selected',type:'line',source:'route',filter:['==',['get','day'],''],layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':2.2,'line-opacity':0,'line-opacity-transition':{duration:420,delay:0}}});
-   // 行程播放：已走过的轨迹逐站点亮
-   map.addSource('route-done',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
-   map.addLayer({id:'route-done',type:'line',source:'route-done',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':2.6,'line-blur':.4,'line-opacity':0,'line-opacity-transition':{duration:240,delay:0}}});
+    map.addSource('memories',{type:'geojson',data:{type:'FeatureCollection',features:[]},cluster:true,clusterRadius:48,clusterMaxZoom:14});
+    map.addLayer({id:'clusters',type:'circle',source:'memories',filter:['has','point_count'],paint:{'circle-color':'#b3bfce','circle-opacity':0,'circle-radius':['interpolate',['linear'],['get','point_count'],2,7,100,15,1000,20]}});
+    map.addLayer({id:'photos',type:'circle',source:'memories',filter:['!', ['has','point_count']],paint:{'circle-color':'#e0e5ed','circle-opacity':0,'circle-radius':4,'circle-stroke-color':'#7f91a8','circle-stroke-opacity':0,'circle-stroke-width':2}});
+    map.addSource('route',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+    map.addLayer({id:'route-glow',type:'line',source:'route',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':5,'line-blur':2,'line-opacity':0,'line-opacity-transition':{duration:420,delay:0}}});
+    map.addLayer({id:'route',type:'line',source:'route',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':1.6,'line-opacity':0,'line-opacity-transition':{duration:420,delay:0}}});
+    map.addLayer({id:'route-selected',type:'line',source:'route',filter:['==',['get','day'],''],layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':2.2,'line-opacity':0,'line-opacity-transition':{duration:420,delay:0}}});
+    // 行程播放：已走过的轨迹逐站点亮
+    map.addSource('route-done',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+    map.addLayer({id:'route-done',type:'line',source:'route-done',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':2.6,'line-blur':.4,'line-opacity':0,'line-opacity-transition':{duration:240,delay:0}}});
+   }catch(e){console.warn('照片/轨迹图层初始化失败',e);}
+   // 到这一步地球已经能画出来了，立刻置为就绪，让切页交接继续；
+   // 省界、城市、世界轮廓都在后面异步补，不再阻塞。
+   setReady(true);
    // 城市边界是可选离线层；数据存在时自动启用，缺失不影响核心地球。
    void (async()=>{try{const cities=await loadMapAsset('china-cities') as {features:BoundaryFeature[]};if(!dead&&cities.features?.length){cityFeatures.current=cities.features;map.addSource('cn-cities',{type:'geojson',data:cities as never});map.addLayer({id:'cn-cities-hit',type:'fill',source:'cn-cities',minzoom:4.8,paint:{'fill-color':'#ffffff','fill-opacity':0}});map.addLayer({id:'cn-cities-line',type:'line',source:'cn-cities',minzoom:4.8,paint:{'line-color':'#657794','line-width':['interpolate',['linear'],['zoom'],5,.45,9,1.15],'line-opacity':.72}});for(const f of cities.features){const c=f.properties?.centroid??f.properties?.center;if(Array.isArray(c)&&c.length>=2&&f.properties?.name)addLabel(c[0],c[1],f.properties.name,'city');}map.on('mousemove','cn-cities-hit',e=>{const p=e.features?.[0]?.properties;setHoverPlace([p?.parentProvince,p?.name].filter(Boolean).join(' · '));});map.on('mouseleave','cn-cities-hit',()=>setHoverPlace(''));syncLabelZoom();}}catch{/* Optional detailed boundaries. */}})();
    map.on('click',e=>{if(!editRef.current)return;const next={lng:e.lngLat.lng,lat:e.lngLat.lat};setDraft(next);editMarker.current?.setLngLat([next.lng,next.lat]);});
-   setReady(true);
   });
   // 中国是初始朝向；用户可在任意缩放级别拖动地球，不自动拉回。
   map.dragPan.enable();
@@ -205,31 +215,57 @@ export default function MapView({photos,onOpenPhoto,focusPhotoId,active,location
  },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
  useEffect(()=>{const map=mapRef.current;if(!ready||!map)return;
-   (map.getSource('memories') as GeoJSONSource).setData({type:'FeatureCollection',features:located.map(p=>({type:'Feature',properties:{id:p.id},geometry:{type:'Point',coordinates:[p.gpsLon!,p.gpsLat!]}}))});
+   (map.getSource('memories') as GeoJSONSource|undefined)?.setData({type:'FeatureCollection',features:located.map(p=>({type:'Feature',properties:{id:p.id},geometry:{type:'Point',coordinates:[p.gpsLon!,p.gpsLat!]}}))});
    // 只在首次就绪时取景一次;之后筛选/数据变化不重置用户镜头
    if(located.length&&!didFit.current&&!handoffRef.current&&map.getZoom()>=3){didFit.current=true;const bounds=new maplibregl.LngLatBounds();located.forEach(p=>bounds.extend([p.gpsLon!,p.gpsLat!]));map.fitBounds(bounds,{padding:{left:350,right:100,top:100,bottom:100},maxZoom:4.5,duration:900});}
  },[ready,located]);
- useEffect(()=>{const map=mapRef.current;if(!ready||!map)return;(map.getSource('route') as GeoJSONSource).setData(connections);},[ready,connections]);
- useEffect(()=>{const map=mapRef.current;if(!ready||!map)return;map.setFilter('route-selected',['==',['get','day'],route?.day??'']);},[ready,route?.day]);
-useEffect(()=>{
- const map=mapRef.current;if(!ready||!map||!route)return;
- (map.getSource('route-done') as GeoJSONSource|undefined)?.setData(routeProgressGeometry(route,index===null?0:index+1));
-},[ready,route,index]);
+ useEffect(()=>{const map=mapRef.current;if(!ready||!map)return;(map.getSource('route') as GeoJSONSource|undefined)?.setData(connections);},[ready,connections]);
+ useEffect(()=>{const map=mapRef.current;if(!ready||!map)return;
+   try{map.setFilter('route-selected',['==',['get','day'],route?.day??'']);}catch{/* 图层没建起来时忽略 */}
+ },[ready,route?.day]);
+ useEffect(()=>{
+  const map=mapRef.current;if(!ready||!map||!route)return;
+  (map.getSource('route-done') as GeoJSONSource|undefined)?.setData(routeProgressGeometry(route,index===null?0:index+1));
+ },[ready,route,index]);
  useEffect(()=>{
   const map=mapRef.current;if(!ready||!map)return;
   const visible=routesEnabled&&!locationEdit;
-  map.setPaintProperty('route','line-opacity',visible?.55:0);
-  map.setPaintProperty('route-glow','line-opacity',visible?.13:0);
-  map.setPaintProperty('route-selected','line-opacity',visible?.85:0);
-  map.setPaintProperty('route-done','line-opacity',visible?.95:0);
+  try{
+   map.setPaintProperty('route','line-opacity',visible?.55:0);
+   map.setPaintProperty('route-glow','line-opacity',visible?.13:0);
+   map.setPaintProperty('route-selected','line-opacity',visible?.85:0);
+   map.setPaintProperty('route-done','line-opacity',visible?.95:0);
+  }catch{/* 图层缺失时忽略 */}
  },[ready,routesEnabled,locationEdit]);
- // 重新显示时校正画布尺寸
+ // 重新显示时校正画布尺寸。切页回来时容器尺寸可能刚变，单次 resize 会拿到旧值，
+ // 所以下一帧和稍后再各校一次，并强制重绘一次，避免出现「地球不在中间 / 花屏 / 空白」。
  useEffect(()=>{
   const map=mapRef.current;if(!active||!ready||!map)return;
-  map.resize();
+  const fix=()=>{
+   if(!mapRef.current)return;
+   map.resize();
+   map.triggerRepaint();
+  };
+  fix();
+  const raf=requestAnimationFrame(fix);
+  const timer=window.setTimeout(fix,240);
   // 交接前已经采用最终构图；重新显示时只同步尺寸，绝不再播放横向补位动画。
   map.setPadding({left:Math.min(300,map.getCanvas().clientWidth*.16),right:0,top:0,bottom:0});
+  return()=>{cancelAnimationFrame(raf);window.clearTimeout(timer);};
  },[active,ready]);
+ // 画布自检：首次挂载时如果容器还没完成布局（尺寸 0×0），MapLibre 会把 canvas 建成 0 尺寸，
+ // 之后无论怎么切页都画不出地球。就绪后检查两次，必要时重新测量并重绘。
+ useEffect(()=>{
+  if(!ready)return;
+  const check=()=>{
+   const map=mapRef.current;if(!map)return;
+   const c=map.getCanvas();
+   if(c.width<=1||c.height<=1){map.resize();map.triggerRepaint();}
+  };
+  const t1=window.setTimeout(check,300);
+  const t2=window.setTimeout(check,1200);
+  return()=>{window.clearTimeout(t1);window.clearTimeout(t2);};
+ },[ready,active]);
  // —— 地球镜头交接:飞行地球(three)与 maplibre 之间按屏幕半径/朝向精确互认 ——
  applyHandoffRef.current=(pose:EarthHandoffPose)=>{
   const map=mapRef.current,el=fadeRef.current;
@@ -245,12 +281,17 @@ useEffect(()=>{
   map.setPadding({left:Math.min(300,map.getCanvas().clientWidth*.16),right:0,top:0,bottom:0});
   map.jumpTo({center:[pose.lng,pose.lat],zoom:maplibreZoomForRadius(pose.screenRadius,pose.viewportH,pose.lat),bearing:0,pitch:0});
   // jumpTo 后等待 MapLibre 真正画出该姿态的第一帧，再开始交叉淡入。
-  map.once('render',()=>requestAnimationFrame(()=>{
+  // 但 render 事件在容器尺寸为 0 / 上下文异常时可能永远不来，必须带超时兜底，
+  // 否则 App 端收不到 map-handoff-complete，切页会卡在空白半路。
+  let fadeStarted=false;
+  const startFade=()=>{
+   if(fadeStarted)return;
+   fadeStarted=true;
    if(generation!==handoffGeneration.current||!handoffRef.current)return;
-   const started=performance.now();let fadeRaf=0;
+   const t0=performance.now();let fadeRaf=0;
    const step=(now:number)=>{
     if(generation!==handoffGeneration.current||!handoffRef.current)return;
-    const linear=Math.min(1,(now-started)/620);
+    const linear=Math.min(1,(now-t0)/620);
     const eased=linear*linear*(3-2*linear);
     el.style.opacity=String(eased);
     if(linear<1){fadeRaf=requestAnimationFrame(step);return;}
@@ -260,8 +301,14 @@ useEffect(()=>{
    el.style.transition='none';
    clearFadeEnd.current=()=>cancelAnimationFrame(fadeRaf);
    fadeRaf=requestAnimationFrame(step);
-  }));
+  };
+  map.once('render',()=>requestAnimationFrame(startFade));
   map.triggerRepaint();
+  window.setTimeout(()=>{
+   if(fadeStarted)return;
+   map.triggerRepaint();
+   requestAnimationFrame(startFade);
+  },400);
  };
  useEffect(()=>{
   const setFade=(visible:boolean,fade=true)=>{

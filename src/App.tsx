@@ -219,6 +219,27 @@ function Shell() {
     }
   }, [navPending, finishEarthHandoff]);
 
+  /**
+   * 切页看门狗。
+   * 进入地图要经过「Three 飞地球 → 地图按姿态画首帧 → 交叉淡入 → 两边确认」四步，
+   * 任何一步被打断（快速连点导航、场景被暂停、地图未就绪）就会卡在 navPending，
+   * 表现就是切到地球只看到空白或半截画面。到点直接落地到目标页，宁可视角不准也不能卡死。
+   */
+  useEffect(() => {
+    if (!navPending) return;
+    const target = navPending;
+    const limit = target === "map" ? 3500 : 3200;
+    const t = window.setTimeout(() => {
+      if (navIntent.current.view !== target) return;
+      setAppView(s => navigateView(s, target));
+      setNavPending(null);
+      setMapReleasing(false);
+      // 卡在交接时地图层可能还是全透明，强制点亮一次
+      if (target === "map") window.dispatchEvent(new CustomEvent("map-fade", { detail: { visible: true } }));
+    }, limit);
+    return () => window.clearTimeout(t);
+  }, [navPending]);
+
   // 只有 MapLibre 已按 Three 地球姿态画出首帧且交叉淡入完成，才允许地图接管并隐藏 Three 地球。
   useEffect(() => {
     const complete = (e: Event) => {
