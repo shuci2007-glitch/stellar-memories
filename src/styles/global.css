@@ -707,8 +707,13 @@ button:active { transform:scale(.98); }
 .route-stops img { width:55px; height:44px; object-fit:cover; }
 .route-stops span { font-size:12px; }.route-stops small { display:block; color:#728094; font-size:10px; margin-top:6px; }
 .map-credit { position:absolute; bottom:18px; right:30px; font-size:10px; color:#8994a5; }
-.route-player { position:absolute; bottom:40px; left:38%; display:flex; gap:20px; padding:16px; background:#121720; }
-.route-player img { width:130px; height:90px; object-fit:cover; cursor:pointer; }
+.route-player { position:absolute; bottom:40px; left:38%; display:flex; gap:18px; padding:14px; background:rgba(14,18,26,.95); border:1px solid rgba(174,194,222,.1); border-radius:10px; max-width:min(660px,60vw); }
+/* 行程播放的媒体区：照片看原图、视频与实况直接播，所以要比缩略图大 */
+.route-player .route-media { width:300px; height:200px; object-fit:contain; background:#070a10; border-radius:6px; flex:none; }
+.route-player img.route-media { cursor:pointer; }
+@media (max-width: 1180px) {
+  .route-player .route-media { width:210px; height:140px; }
+}
 .route-player small { color:#97a1b0; }.route-player p { margin:10px 0; }.route-player button { padding:8px 12px 0 0; font-size:12px; }
 .route-player .route-info { min-width: 230px; }
 .route-progress { height:3px; border-radius:3px; background:#1e2632; overflow:hidden; margin:10px 0 8px; }
@@ -719,6 +724,37 @@ button:active { transform:scale(.98); }
 .route-controls { display:flex; gap:16px; margin-top:6px; }
 .route-controls button { padding:0; color:#c9d0db; }
 .route-controls button:hover:not(:disabled) { color:#fff; }
+
+/* ---------- 时间轴页内播放 ---------- */
+.tl-player {
+  position: fixed; inset: 0; z-index: 45;
+  display: flex; flex-direction: column;
+  background: rgba(5,8,14,.94);
+  backdrop-filter: blur(10px);
+}
+.tl-player-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.tl-player-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+/* 缓慢推近：整段推镜走完才切下一张 */
+.tl-player-dolly { animation: tlDolly 6.5s linear both; transform-origin: 50% 50%; will-change: transform; }
+.tl-player-dolly.is-paused { animation-play-state: paused; }
+@keyframes tlDolly { from { transform: scale(1); } to { transform: scale(1.32); } }
+.tl-player-top {
+  position: absolute; top: 0; left: 0; right: 0; display: flex; justify-content: space-between;
+  padding: 62px 30px 18px; font-size: 12px; letter-spacing: .14em; color: #cfd8e6;
+  background: linear-gradient(rgba(0,0,0,.6), transparent); pointer-events: none;
+}
+.tl-player-bar { padding: 0 30px 22px; background: linear-gradient(transparent, rgba(0,0,0,.55)); }
+.tl-player-track { height: 2px; background: rgba(255,255,255,.16); }
+.tl-player-track i {
+  display: block; height: 100%; width: 0; background: #dfe9ff;
+  animation-name: tlProgress; animation-timing-function: linear; animation-fill-mode: forwards;
+}
+@keyframes tlProgress { from { width: 0; } to { width: 100%; } }
+.tl-player-controls { display: flex; align-items: center; gap: 12px; margin-top: 14px; font-size: 12px; }
+.tl-player-controls button { padding: 6px 14px; border-radius: 999px; background: rgba(255,255,255,.08); color: #e6edf9; }
+.tl-player-controls button:hover { background: rgba(255,255,255,.18); }
+.tl-player-name { color: #8e9aac; font-size: 11px; margin-left: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-player-exit { margin-left: auto; }
 
 /* ---------- 幻灯片放映 ---------- */
 .slideshow { position:fixed; inset:0; z-index:400; background:#000; overflow:hidden; cursor:none; }

@@ -48,15 +48,11 @@ describe("时间轴视图", () => {
     expect(html).toContain("还没有照片");
   });
 
-  it("有放映回调时显示放映按钮与当前张数", () => {
-    const html = renderToStaticMarkup(
-      <TimelineView photos={photos} onOpenPhoto={() => {}} onSlideshow={() => {}} />,
-    );
-    expect(html).toContain("放映");
+  it("有播放按钮与当前张数", () => {
+    const html = render();
+    expect(html).toContain("播放");
     expect(html).toContain(`${photos.length} 张`);
-  });
-
-  it("没有放映回调时不渲染放映按钮", () => {
-    expect(render()).not.toContain(">放映<");
+    // 播放器是点开后才挂载的，静态渲染时不应该出现
+    expect(html).not.toContain("tl-player");
   });
 });

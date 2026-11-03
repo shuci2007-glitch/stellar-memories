@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { tmThumb } from "../core/types";
 import { prewarmDetailPhoto } from '../three/DetailPhotoResources';
+import TimelinePlayer from "./TimelinePlayer";
 
 interface TimelinePhoto {
   id: number;
@@ -75,18 +76,18 @@ export default function TimelineView({
   onOpenPhoto,
   onDeletePhotos,
   onStarPhotos,
-  onSlideshow,
 }: {
   photos: TimelinePhoto[];
   onThisDay?: TimelinePhoto[];
   onOpenPhoto: (id: number, source?: HTMLElement) => void;
   onDeletePhotos?: (ids: number[]) => Promise<void> | void;
   onStarPhotos?: (ids: number[], starred: boolean) => Promise<void> | void;
-  onSlideshow?: (photos: TimelinePhoto[]) => void;
 }) {
   const [filter, setFilter] = useState<FilterKey>("all");
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
+  /** 页内播放：null 表示没在播 */
+  const [player, setPlayer] = useState<{ list: TimelinePhoto[]; start: number } | null>(null);
 
   const shown = useMemo(() => photos.filter((p) => matchFilter(p, filter)), [photos, filter]);
   const blocks = useMemo(() => buildBlocks(shown), [shown]);
@@ -144,15 +145,13 @@ export default function TimelineView({
         ) : (
           <div className="tl-actions">
             <span className="tl-count">{shown.length} 张</span>
-            {onSlideshow && (
-              <button
-                disabled={!shown.length}
-                onClick={() => onSlideshow(shown)}
-                title="把当前筛选结果按时间顺序放映"
-              >
-                放映
-              </button>
-            )}
+            <button
+              disabled={!shown.length}
+              onClick={() => setPlayer({ list: shown, start: 0 })}
+              title="在当前页里逐张播放（照片缓慢推近到底，视频与实况直接播）"
+            >
+              播放
+            </button>
             <button className="tl-select" onClick={() => setSelecting(true)}>选择</button>
           </div>
         )}
@@ -223,6 +222,15 @@ export default function TimelineView({
           </div>
         </div>
       ))}
+
+      {player && (
+        <TimelinePlayer
+          photos={player.list}
+          startIndex={player.start}
+          onClose={() => setPlayer(null)}
+          onOpenPhoto={(id) => onOpenPhoto(id)}
+        />
+      )}
     </div>
   );
 }

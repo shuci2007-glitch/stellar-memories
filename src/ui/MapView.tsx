@@ -1,10 +1,10 @@
 import {loadMapAsset} from '../core/mapAssets';
 import { installEarthMapSurface } from "../three/EarthMapSurface";
-import {useEffect,useMemo,useRef,useState} from 'react';
+import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import * as maplibregl from 'maplibre-gl';
 import type {GeoJSONSource,Marker,StyleSpecification} from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import {tmThumb,type Photo} from '../core/types';
+import {tmPhoto,tmThumb,tmVideo,type Photo} from '../core/types';
 import {memoryRoutes,validGps,routeGeometry,routeProgressGeometry} from '../core/memoryRoutes';
 import {loadMapRoutesEnabled,MAP_ROUTE_SETTINGS_EVENT} from '../core/MapRouteSettings';
 import {isTauri} from '../core/env';
@@ -53,6 +53,12 @@ export default function MapView({photos,onOpenPhoto,focusPhotoId,active,location
  const [routesEnabled,setRoutesEnabled]=useState(false);
  const [speed,setSpeed]=useState(3600);
  const [tripAll,setTripAll]=useState(false);
+ // 行程播放的媒体状态：视频/实况要真正播完才进下一站
+ const [livePhase,setLivePhase]=useState<'still'|'motion'>('still');
+ const [mediaFailed,setMediaFailed]=useState(false);
+ const [mediaMuted,setMediaMuted]=useState(true);
+ const [imageReady,setImageReady]=useState(false);
+ const mediaRef=useRef<HTMLVideoElement>(null);
   useEffect(()=>{
    if(!isTauri())return; // 浏览器回退模式:无后端,不再发起读取
    let live=true,changed=false;
@@ -321,7 +327,18 @@ useEffect(()=>{if(!selected)return;const map=mapRef.current;if(!map)return;
   const push=setTimeout(()=>map.easeTo({zoom:13.05,duration:Math.max(1200,speed-arrive),essential:true}),arrive+120);
   return()=>clearTimeout(push);
 },[selected?.id,speed]);
-useEffect(()=>{if(!playing||!route)return;const timer=setTimeout(()=>{
+// 当前站要播放的视频源：整段视频，或实况进入动态阶段后的内嵌片段
+const routeVideoSrc=!selected?'':selected.kind==='video'?tmVideo(selected.id):(selected.liveVideoId!=null&&livePhase==='motion'?tmVideo(selected.liveVideoId):'');
+// 换站重置实况阶段与失败标记
+useEffect(()=>{setLivePhase('still');setMediaFailed(false);setImageReady(false);},[selected?.id]);
+// 原图没加载完先别开始计时，否则大图还没看清就被切走；最多等 2.5 秒兜底
+useEffect(()=>{
+  if(!selected||routeVideoSrc)return;
+  const t=setTimeout(()=>setImageReady(true),2500);
+  return()=>clearTimeout(t);
+},[selected?.id,routeVideoSrc]);
+const advance=useCallback(()=>{
+  if(!route)return;
   if(index===null){setIndex(0);return;}
   if(index+1<route.photos.length){setIndex(index+1);return;}
   if(tripAll){
@@ -330,7 +347,29 @@ useEffect(()=>{if(!playing||!route)return;const timer=setTimeout(()=>{
     if(next){setDay(next.day);setIndex(0);return;}
   }
   setPlaying(false);
-},speed);return()=>clearTimeout(timer);},[playing,index,route,speed,tripAll,routes]);
+},[index,route,tripAll,routes]);
+// 照片按「每站时长」推进；视频与实况由播放结束事件推进，播到尽头再切
+useEffect(()=>{
+  if(!playing||!route)return;
+  const isVideo=selected?.kind==='video';
+  const isLive=selected?.liveVideoId!=null;
+  if(isVideo&&!mediaFailed)return;
+  if(isLive&&livePhase==='motion'&&!mediaFailed)return;
+  // 静帧还没加载完就先不计时，等图出来再开始算这一站
+  if(!routeVideoSrc&&!imageReady)return;
+  const ms=isLive&&!mediaFailed?1600:speed;
+  const timer=setTimeout(()=>{
+    if(isLive&&!mediaFailed)setLivePhase('motion');
+    else advance();
+  },ms);
+  return()=>clearTimeout(timer);
+},[playing,index,route,speed,selected?.id,selected?.kind,selected?.liveVideoId,livePhase,mediaFailed,advance]);
+// 暂停/继续要作用到视频上
+useEffect(()=>{
+  const v=mediaRef.current;if(!v)return;
+  if(playing)void v.play().catch(()=>{});
+  else v.pause();
+},[playing,livePhase,selected?.id]);
 const exit=()=>{setPlaying(false);setIndex(null);setTripAll(false);if(saved.current)mapRef.current?.easeTo({...saved.current,duration:700});saved.current=null;};
  useEffect(()=>{if(!active)return;const key=(e:KeyboardEvent)=>{if((e.target as HTMLElement).matches?.('input,textarea,select'))return;if(e.key==='Escape'){if(wallKey)return;if(editRef.current)onLocationDone(false);else if(quickLocation)setQuickLocation(false);else exit();}};window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);},[active,onLocationDone,quickLocation,wallKey]); // eslint-disable-line react-hooks/exhaustive-deps
  const start=()=>{const map=mapRef.current;if(!map||!route)return;setRoutesEnabled(true);if(!saved.current)saved.current={center:map.getCenter(),zoom:map.getZoom(),bearing:map.getBearing(),pitch:map.getPitch()};setIndex(0);setPlaying(true);};
@@ -342,5 +381,5 @@ const startAll=()=>{if(!routes.length)return;const map=mapRef.current;setRoutesE
  {routes.length>0?<><p className="map-route-legend"><span style={{background:route?.color}}/> {route?.day} · {routesEnabled?'同日连线已开启':'同日连线已关闭'}</p><select aria-label="旅行日期" value={route?.day} onChange={e=>{exit();setDay(e.target.value);}}>{routes.map(r=><option key={r.day}>{r.day}</option>)}</select><button className="pill-btn" onClick={()=>{setTripAll(false);start();}}>播放这一天 →</button>{routes.length>1&&<button className="pill-btn" onClick={startAll}>{tripAll&&playing?'正在连播全部行程':'连播全部行程 ▶'}</button>}
  <div className="route-stops">{route?.photos.map((p,i)=><button key={p.id} onClick={()=>{if(index===null)start();setPlaying(false);setIndex(i);}}><img src={tmThumb(p.id)} alt=""/><span>{p.captureDate?.slice(11,16)||'时间未知'}<small>{p.filename}</small></span></button>)}</div></>:<p className="map-empty">还没有带 GPS 的照片。可在照片详情手动指定坐标。</p>}
 
- </aside>}{!locationEdit&&nearby.length>0&&<aside className="map-nearby-panel"><div><span>此处的回忆 · {nearby.length} 张</span><button onClick={()=>setNearbyKey(null)} aria-label="收起此处照片">×</button></div><div className="map-nearby-grid">{nearby.map(p=><button key={p.id} className={p.id===focusPhotoId?"is-focused-photo":""} onPointerDown={e=>{if(quickLocation)startLocatedPhotoDrag(e.nativeEvent,p,e.currentTarget);}} onClick={e=>{if(!consumeLocationDragClick(e.currentTarget))onOpenPhoto(p.id,e.currentTarget);}} title={quickLocation?`${p.filename} · 拖回左侧取消定位`:p.filename}><img src={tmThumb(p.id)} alt={p.filename} loading="lazy"/></button>)}</div></aside>}{!locationEdit&&!quickLocation&&selected&&<div className="route-player"><img src={tmThumb(selected.id)} alt={selected.filename} onClick={()=>onOpenPhoto(selected.id)}/><div className="route-info"><small>{selected.captureDate}</small><p>{selected.filename}</p><div className="route-progress"><i style={{width:`${(((index??0)+1)/(route?.photos.length||1))*100}%`}}/></div><div className="route-meta"><span>第 {(index??0)+1} / {route?.photos.length??0} 站</span><label>每站<select value={speed} onChange={e=>setSpeed(Number(e.target.value))} aria-label="播放速度"><option value={2400}>2.4s</option><option value={3600}>3.6s</option><option value={5500}>5.5s</option></select></label>{tripAll&&<span className="route-mode">连播全部</span>}</div><div className="route-controls"><button disabled={index===0} onClick={()=>{setPlaying(false);setIndex(i=>Math.max(0,(i??0)-1));}}>上一张</button><button onClick={()=>setPlaying(p=>!p)}>{playing?'暂停':'继续'}</button><button disabled={index===(route?.photos.length??1)-1} onClick={()=>{setPlaying(false);setIndex(i=>Math.min((route?.photos.length??1)-1,(i??0)+1));}}>下一张</button><button onClick={exit}>退出播放</button></div></div></div>}{hoverPlace&&<div className="map-hover-place">{hoverPlace}</div>}<div className="map-crosshair" aria-hidden="true"/><div className="map-credit">Solar System Scope · CC BY 4.0 · 昼夜按当前时间 · 夜灯为地理分布模拟 · 拖动旋转 · 滚轮缩放</div></div>{wallGroup&&wallShape&&<ProvincePhotoWall key={wallGroup.key} name={wallGroup.name} shape={wallShape} districts={cityFeatures.current.filter(p=>p.properties?.parentProvince===wallKey)} photos={wallGroup.photos} onClose={()=>setWallKey(null)}/>}</section>;
+ </aside>}{!locationEdit&&nearby.length>0&&<aside className="map-nearby-panel"><div><span>此处的回忆 · {nearby.length} 张</span><button onClick={()=>setNearbyKey(null)} aria-label="收起此处照片">×</button></div><div className="map-nearby-grid">{nearby.map(p=><button key={p.id} className={p.id===focusPhotoId?"is-focused-photo":""} onPointerDown={e=>{if(quickLocation)startLocatedPhotoDrag(e.nativeEvent,p,e.currentTarget);}} onClick={e=>{if(!consumeLocationDragClick(e.currentTarget))onOpenPhoto(p.id,e.currentTarget);}} title={quickLocation?`${p.filename} · 拖回左侧取消定位`:p.filename}><img src={tmThumb(p.id)} alt={p.filename} loading="lazy"/></button>)}</div></aside>}{!locationEdit&&!quickLocation&&selected&&<div className="route-player">{routeVideoSrc?<video ref={mediaRef} key={routeVideoSrc} className="route-media" src={routeVideoSrc} autoPlay muted={mediaMuted} playsInline onEnded={advance} onError={()=>setMediaFailed(true)}/>:<img className="route-media" src={tmPhoto(selected.id)} alt={selected.filename} onClick={()=>onOpenPhoto(selected.id)} onLoad={()=>setImageReady(true)} onError={e=>{const el=e.currentTarget;setImageReady(true);if(!el.dataset.fb){el.dataset.fb='1';el.src=tmThumb(selected.id);}}}/>}<div className="route-info"><small>{selected.captureDate}</small><p>{selected.filename}</p><div className="route-progress"><i style={{width:`${(((index??0)+1)/(route?.photos.length||1))*100}%`}}/></div><div className="route-meta"><span>第 {(index??0)+1} / {route?.photos.length??0} 站</span><label>每站<select value={speed} onChange={e=>setSpeed(Number(e.target.value))} aria-label="播放速度"><option value={2400}>2.4s</option><option value={3600}>3.6s</option><option value={5500}>5.5s</option></select></label>{tripAll&&<span className="route-mode">连播全部</span>}</div><div className="route-controls"><button disabled={index===0} onClick={()=>{setPlaying(false);setIndex(i=>Math.max(0,(i??0)-1));}}>上一张</button><button onClick={()=>setPlaying(p=>!p)}>{playing?'暂停':'继续'}</button>{routeVideoSrc&&<button onClick={()=>setMediaMuted(m=>!m)} title="实况/视频的声音">{mediaMuted?'声音：关':'声音：开'}</button>}<button disabled={index===(route?.photos.length??1)-1} onClick={()=>{setPlaying(false);setIndex(i=>Math.min((route?.photos.length??1)-1,(i??0)+1));}}>下一张</button><button onClick={exit}>退出播放</button></div></div></div>}{hoverPlace&&<div className="map-hover-place">{hoverPlace}</div>}<div className="map-crosshair" aria-hidden="true"/><div className="map-credit">Solar System Scope · CC BY 4.0 · 昼夜按当前时间 · 夜灯为地理分布模拟 · 拖动旋转 · 滚轮缩放</div></div>{wallGroup&&wallShape&&<ProvincePhotoWall key={wallGroup.key} name={wallGroup.name} shape={wallShape} districts={cityFeatures.current.filter(p=>p.properties?.parentProvince===wallKey)} photos={wallGroup.photos} onClose={()=>setWallKey(null)}/>}</section>;
 }

@@ -713,11 +713,6 @@ function Shell() {
               onOpenPhoto={openDetail}
               onDeletePhotos={onDeletePhotos}
               onStarPhotos={onStarPhotos}
-              onSlideshow={(list) => {
-                if (!list.length) return;
-                setSlideshowPhotos(list);
-                setSlideshowOpen(true);
-              }}
             />
           </div>
         )}
