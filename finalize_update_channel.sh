@@ -47,7 +47,7 @@ URL="https://github.com/$REPO/releases/download/v${APP_VERSION}/${SETUP_NAME}"
 cat > "$OUT_DIR/update.json" <<EOF
 {
   "version": "$APP_VERSION",
-  "notes": "修复从时间轴、相册架切到地球时偶发卡住/空白/画面错乱：地球瓦片服务改为单例复用，地图初始化不再被省界数据阻塞，交叉淡入加了超时兜底，切页超过 3.5 秒会自动落地到目标页面；另外补了画布尺寸自检（首次挂载时容器未布局会把地图建成 0 尺寸）。",
+  "notes": "实况照片打开即自动播放，播完停在最后一帧，不用再手动点。宇宙页新增「全部照片」：点一下就能看到当前星系里的全部照片（带视频/实况统计），里面的「播放全部」会把照片推镜到底、视频与实况完整播完再切下一张。",
   "pub_date": "$PUB_DATE",
   "platforms": {
     "windows-x86_64": {
