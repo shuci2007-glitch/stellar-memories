@@ -53,6 +53,25 @@ describe("幻灯片放映", () => {
     );
     expect(html).toContain("3 / 3");
   });
+
+  it("视频直接渲染播放器而不是静态图", () => {
+    const html = renderToStaticMarkup(
+      <Slideshow photos={[photo(7, { kind: "video" })]} onClose={() => {}} />,
+    );
+    expect(html).toContain("<video");
+    expect(html).toContain("http://tm.localhost/video/7");
+    expect(html).toContain("slide-video");
+  });
+
+  it("实况先亮静帧并标注实况", () => {
+    const html = renderToStaticMarkup(
+      <Slideshow photos={[photo(8, { liveVideoId: 88 })]} onClose={() => {}} />,
+    );
+    // 首帧是静帧（img），动态片段要等静帧阶段结束才挂载
+    expect(html).toContain("http://tm.localhost/photo/8");
+    expect(html).not.toContain("<video");
+    expect(html).toContain("实况");
+  });
 });
 
 describe("行程已走过轨迹", () => {

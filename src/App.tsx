@@ -16,7 +16,7 @@ import PhotoDetail from "./ui/PhotoDetail";
 import ImportOverlay from "./ui/ImportOverlay";
 import SettingsView from "./ui/SettingsView";
 import BackfillBar from "./ui/BackfillBar";
-import Slideshow from "./ui/Slideshow";import VideoPosterAgent from "./core/videoPoster";
+import Slideshow, { type SlidePhoto } from "./ui/Slideshow";import VideoPosterAgent from "./core/videoPoster";
 import { SpaceBar } from "./ui/SpaceBar";
 import { shapeOf, type Space } from "./core/spaces";
 import { ToastProvider, useToast } from "./core/toast";
@@ -247,6 +247,8 @@ function Shell() {
   useEffect(()=>()=>{transition.current.cancel();},[]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [slideshowOpen, setSlideshowOpen] = useState(false);
+  /** 从时间轴发起的放映：用当前筛选结果，而不是全库。 */
+  const [slideshowPhotos, setSlideshowPhotos] = useState<SlidePhoto[] | null>(null);
   const [searchOpen,setSearchOpen]=useState(false);
   const changeSearch=useCallback((open:boolean)=>{setSearchOpen(open);if(open){setSettingsOpen(false);setImportMenu(false);}},[]);
 
@@ -711,6 +713,11 @@ function Shell() {
               onOpenPhoto={openDetail}
               onDeletePhotos={onDeletePhotos}
               onStarPhotos={onStarPhotos}
+              onSlideshow={(list) => {
+                if (!list.length) return;
+                setSlideshowPhotos(list);
+                setSlideshowOpen(true);
+              }}
             />
           </div>
         )}
@@ -737,7 +744,7 @@ function Shell() {
           />
         )}
         {view === "map" && navPending === null && mapReturn && !detailOpen && <button className="map-detail-return pill-btn" onClick={()=>void returnToPhoto()} aria-label="返回照片详情">〈 返回照片</button>}
-        {settingsOpen && <SettingsView onClose={()=>setSettingsOpen(false)} />}
+        {settingsOpen && <SettingsView onClose={()=>setSettingsOpen(false)} onChanged={()=>void reload()} />}
 
         {stage === "ready" && !mapReturn && !returningPhoto.current && !(view === "shelf" && albumRibbonExpanded) && !(detailOpen && appView.content === "photo_detail") && (
           <TopBar
@@ -750,6 +757,7 @@ function Shell() {
               const list = allPhotos.length ? allPhotos : photos;
               if (!list.length) { toast("还没有照片可以放映"); return; }
               setSearchOpen(false); setSettingsOpen(false); setImportMenu(false);
+              setSlideshowPhotos(list);
               setSlideshowOpen(true);
             }}
             onOpenPhoto={openDetail}
@@ -863,8 +871,8 @@ function Shell() {
 
       {slideshowOpen && (
         <Slideshow
-          photos={allPhotos.length ? allPhotos : photos}
-          onClose={() => setSlideshowOpen(false)}
+          photos={slideshowPhotos ?? (allPhotos.length ? allPhotos : photos)}
+          onClose={() => { setSlideshowOpen(false); setSlideshowPhotos(null); }}
         />
       )}
     </div>

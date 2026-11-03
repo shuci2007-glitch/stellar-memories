@@ -2,10 +2,11 @@ mod auth;
 mod backfill;
 mod backup;
 mod album_xfer;
-mod db;
+pub mod db;
 mod exif;
 mod import;
 mod models;
+pub mod motion;
 mod particle_cache;
 mod protocol;
 #[cfg(feature = "heic")]
@@ -736,15 +737,26 @@ fn delete_photo(state: State<AppState>, id: i64) -> Result<(), String> {
     // 被删掉的这张照片如果正被当作某个页面的背景,要一并摘掉,否则页面会指向空图。
     tx.execute("UPDATE spaces SET background_photo_id=NULL WHERE background_photo_id=?1", [id])
         .map_err(|e| e.to_string())?;
+    // 实况照片的动态片段是独立一行 + 独立文件，不随这次删除级联，先单独清掉。
+    motion::drop_for(&tx, id);
     tx.execute("DELETE FROM photos WHERE id=?1", [id]).map_err(|e| e.to_string())?;
     // 相册保留，只为受影响的封面选择仍存在的照片；关联记录由外键级联移除。
     tx.execute("UPDATE albums SET cover_photo_id=(SELECT p.id FROM album_photos ap JOIN photos p ON p.id=ap.photo_id WHERE ap.album_id=albums.id AND p.imported=1 AND p.missing=0 ORDER BY p.score DESC,p.id LIMIT 1) WHERE cover_photo_id=?1", [id]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
 }
 
+/// 给存量照片补做「动态照片」识别：抽出内嵌视频并建立实况关联。
+/// 老版本导入时还没有这个能力，升级后需要跑一次才能在实况里看到。
 #[tauri::command]
-fn rescan_missing(state: State<AppState>) -> Result<u32, String> {
+fn scan_motion_photos(state: State<AppState>, limit: Option<usize>) -> Result<serde_json::Value, String> {
     require_unlocked(&state)?;
+    let cap = limit.unwrap_or(2000).clamp(1, 20000);
+    let (tried, done) = motion::backfill(&state.db, &state.data_dir, cap);
+    Ok(serde_json::json!({ "tried": tried, "done": done }))
+}
+
+#[tauri::command]
+fn rescan_missing(state: State<AppState>) -> Result<u32, String> {    require_unlocked(&state)?;
     let conn = state.db.0.lock();
     let rows: Vec<(i64, String)> = conn
         .prepare("SELECT id, path FROM photos WHERE imported=1 AND missing=0")
@@ -1372,6 +1384,38 @@ pub fn run() {
                     spawn_update_check(h);
                 });
             }
+            // 老版本导入的动态照片（单文件 JPEG 内嵌 MP4）没有实况关联，
+            // 升级后补扫一次；用 settings 标记，避免每次启动都全库读文件。
+            {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    let state = h.state::<AppState>();
+                    let pending = {
+                        let conn = state.db.0.lock();
+                        crate::db::get_setting(&conn, "motion_scan_v1").is_none()
+                    };
+                    if !pending {
+                        return;
+                    }
+                    let db = state.db.clone();
+                    let data_dir = state.data_dir.clone();
+                    let (tried, done) = tauri::async_runtime::spawn_blocking(move || {
+                        motion::backfill(&db, &data_dir, 2000)
+                    })
+                    .await
+                    .unwrap_or((0, 0));
+                    {
+                        let conn = state.db.0.lock();
+                        let _ = conn.execute(
+                            "INSERT INTO settings(key,value) VALUES('motion_scan_v1','1')
+                             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                            [],
+                        );
+                    }
+                    eprintln!("动态照片补扫：检查 {tried} 张，关联 {done} 张");
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1384,7 +1428,7 @@ pub fn run() {
             get_setting, set_setting, save_province_wall,
             import_photos, cancel_import,
             list_photos, get_photo_full, save_memory, toggle_star, set_photo_date, set_photo_location,
-            delete_photo, rescan_missing, get_stats,
+            delete_photo, rescan_missing, scan_motion_photos, get_stats,
             get_timeline, get_on_this_day, search_photos,
             list_albums, save_album_galaxy, create_album, rename_album, set_album_description, delete_album, set_album_cover,
             get_connections, add_connection, remove_connection,

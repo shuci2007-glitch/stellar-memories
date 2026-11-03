@@ -47,4 +47,16 @@ describe("时间轴视图", () => {
     );
     expect(html).toContain("还没有照片");
   });
+
+  it("有放映回调时显示放映按钮与当前张数", () => {
+    const html = renderToStaticMarkup(
+      <TimelineView photos={photos} onOpenPhoto={() => {}} onSlideshow={() => {}} />,
+    );
+    expect(html).toContain("放映");
+    expect(html).toContain(`${photos.length} 张`);
+  });
+
+  it("没有放映回调时不渲染放映按钮", () => {
+    expect(render()).not.toContain(">放映<");
+  });
 });

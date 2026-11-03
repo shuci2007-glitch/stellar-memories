@@ -27,7 +27,7 @@ import {
 type LockMin = "5" | "15" | "30" | "60" | "never";
 
 /** 设置:粒子质量 / 性能模式 / 自动锁定 / 密码 / 备份 / 关于 */
-export default function SettingsView({onClose}:{onClose:()=>void}) {
+export default function SettingsView({onClose,onChanged}:{onClose:()=>void;onChanged?:()=>void}) {
   const [tier, setTier] = useState<QualityTier>("medium");
   const [perf, setPerf] = useState<PerfMode>("balanced");
   const [lock, setLock] = useState<LockMin>("15");
@@ -51,6 +51,25 @@ export default function SettingsView({onClose}:{onClose:()=>void}) {
   const [particle, setParticle] = useState<PhotoParticleSettings>({ ...PHOTO_PARTICLE_DEFAULTS });
   const [sphere, setSphere] = useState<PhotoSphereSettings>({ ...PHOTO_SPHERE_DEFAULTS });
   const toast = useToast();
+
+  // ---------- 动态照片（实况）补全 ----------
+  const [scanningMotion, setScanningMotion] = useState(false);
+  const motionGuard = useRef(false);
+  const scanMotion = async () => {
+    if (motionGuard.current) return;
+    motionGuard.current = true;
+    setScanningMotion(true);
+    try {
+      const r = await ipc.scanMotionPhotos();
+      toast(r.done > 0 ? `检查 ${r.tried} 张，新增实况 ${r.done} 张` : `检查 ${r.tried} 张，没有新的实况照片`);
+      if (r.done > 0) onChanged?.();
+    } catch (e) {
+      toast(`扫描失败：${e}`);
+    } finally {
+      motionGuard.current = false;
+      setScanningMotion(false);
+    }
+  };
 
   // ---------- 桌面壁纸 / 手机上传 ----------
   const [wallpaper, setWallpaper] = useState(false);
@@ -385,6 +404,19 @@ export default function SettingsView({onClose}:{onClose:()=>void}) {
               {savingPassword?"保存中…":changingPwd?"保存密码":passwordEnabled?"修改":"设置"}
             </button>
             {changingPwd&&<button className="pill-btn" disabled={savingPassword} onClick={()=>{setChangingPwd(false);setPwdOld("");setPwdNew("");}}>取消</button>}
+          </div>
+        </div>
+
+        <h2>媒体</h2>
+        <div className="group">
+          <div className="row">
+            <div className="lab">
+              补全实况照片
+              <small>识别安卓 / 华为「动态照片」里内嵌的视频，识别后可在时间轴「实况」里查看并播放</small>
+            </div>
+            <button className="pill-btn" disabled={scanningMotion} onClick={() => void scanMotion()}>
+              {scanningMotion ? "扫描中…" : "开始扫描"}
+            </button>
           </div>
         </div>
 

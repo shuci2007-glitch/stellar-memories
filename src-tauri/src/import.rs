@@ -154,6 +154,9 @@ fn run_import(
     let mut pending: Vec<Pending> = Vec::new();
     // 本次导入里落库的视频(含实况照片的动态片段),用于后面的实况配对。
     let mut video_ids: Vec<i64> = Vec::new();
+    // 安卓「动态照片」：单文件 JPEG 内部带一段 MP4，锁内只登记候选，
+    // 出锁后再抽文件（attach 自己要锁 db，parking_lot 不可重入）。
+    let mut motion_candidates: Vec<(i64, String, String)> = Vec::new();
     {
         let conn = db.0.lock();
         for f in &files {
@@ -212,10 +215,16 @@ fn run_import(
                     )
                     .ok();
                 } else {
+                    motion_candidates.push((id, f.path.clone(), filename.clone()));
                     pending.push(Pending { id, path: f.path.clone() });
                 }
             }
         }
+    }
+
+    // 抽安卓动态照片的内嵌视频（这一步会读文件头尾，放在锁外做）。
+    for (id, path, filename) in &motion_candidates {
+        crate::motion::attach(&db, &data_dir, *id, Path::new(path), filename);
     }
 
     // 分批:只把前 N 张做完整预处理(EXIF + 缩略图 + 粒子),其余先入库占位,

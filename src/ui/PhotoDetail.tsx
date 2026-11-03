@@ -106,6 +106,9 @@ export default function PhotoDetail({photo,memory,onMemoryChanged,onClose,onNav,
  const [starred,setStarred]=useState(photo.starred);
  const toast=useToast();
  useEffect(()=>setDisplayMode(originalFirst?'original':'particle'),[photo.id,originalFirst]);
+ // 换照片时停掉上一张的实况播放，避免视频挂在下一张图上。
+ useEffect(()=>{setLivePlaying(false);},[photo.id]);
+ useEffect(()=>{if(photo.liveVideoId==null)setLivePlaying(false);},[photo.liveVideoId]);
  const [originalLoaded,setOriginalLoaded]=useState(false);
  useEffect(()=>setError(''),[photo.id]);
  useEffect(()=>{
@@ -164,9 +167,9 @@ export default function PhotoDetail({photo,memory,onMemoryChanged,onClose,onNav,
           />
         )}
         {photo.liveVideoId != null && !deleting && !livePlaying && (
-          <button className="live-play-overlay" onClick={() => setLivePlaying(true)} aria-label="播放实况照片">
+          <button className="live-play-overlay" onClick={() => setLivePlaying(true)} aria-label="播放实况照片" title="播放实况">
             <span className="live-play-icon">▶</span>
-            <span className="live-badge">实况</span>
+            <span className="live-badge">实况 · 点击播放</span>
           </button>
         )}
         {photo.liveVideoId != null && !deleting && livePlaying && (
@@ -178,6 +181,10 @@ export default function PhotoDetail({photo,memory,onMemoryChanged,onClose,onNav,
             controls
             playsInline
             onEnded={() => setLivePlaying(false)}
+            onError={() => {
+              setLivePlaying(false);
+              toast("这段实况无法播放：系统可能缺少 HEVC 视频解码器");
+            }}
           />
         )}
         {photo.kind !== 'video' && canvasMounted&&<ParticleDetailCanvas hidden={originalFirst&&displayMode==='original'} deleting={deleting} onConsumed={()=>void onDeleted(photo.id)} photoId={photo.id} bridge={bridge} active={displayMode==='particle'} onReady={()=>setReady(true)} fit100={fit100==='100'} frozen={exiting} onError={setError} openingProgress={originalFirst?undefined:openingProgress}/>}

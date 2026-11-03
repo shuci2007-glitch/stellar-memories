@@ -115,6 +115,9 @@ export const ipc = {
   setPhotoDate: (id: number, date: string) =>
     invoke("set_photo_date", { id, date }),
   deletePhoto: (id: number) => invoke("delete_photo", { id }),
+  /** 补做安卓/华为动态照片识别：抽出内嵌视频并建立实况关联 */
+  scanMotionPhotos: (limit?: number) =>
+    invoke<{ tried: number; done: number }>("scan_motion_photos", { limit: limit ?? null }),
   getStats: () =>
     invoke<{ photoCount: number; albumCount: number; memoryCount: number }>(
       "get_stats",

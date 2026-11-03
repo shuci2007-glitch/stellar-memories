@@ -727,6 +727,12 @@ button:active { transform:scale(.98); }
 @keyframes slideKbB { from { transform:scale(1.085) translate3d(.8%,.6%,0); } to { transform:scale(1.015); } }
 .slide-img.kb-0 { animation: slideKbA 7.2s ease-out both; }
 .slide-img.kb-1 { animation: slideKbB 7.2s ease-out both; }
+/* 视频/实况的动态片段：不套 Ken Burns，避免把画面裁掉 */
+.slide-video { background:#000; object-fit:contain; animation:none; }
+.slide-live-tag {
+  margin-left:10px; padding:2px 8px; border-radius:999px; font-size:10px; letter-spacing:.1em;
+  background:rgba(120,150,255,.8); color:#fff; vertical-align:middle;
+}
 .slide-top {
   position:absolute; top:0; left:0; right:0; display:flex; justify-content:space-between;
   padding:22px 30px; font-size:12px; letter-spacing:.14em; color:#cfd8e6;
@@ -1102,6 +1108,9 @@ html[data-wallpaper="1"], html[data-wallpaper="1"] body { background:#06070A; ov
 .live-play-overlay {
   position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   background:rgba(6,8,14,.28); border:none; cursor:pointer; border-radius:12px; transition:background .2s;
+  /* 原图模式里 .map-original-photo 的 <img> 在 DOM 上排在后面，
+     同层级会把它盖住，必须显式抬到图片之上，否则按钮点不到也看不见。 */
+  z-index:6;
 }
 .live-play-overlay:hover { background:rgba(6,8,14,.42); }
 .live-play-icon {
@@ -1113,7 +1122,7 @@ html[data-wallpaper="1"], html[data-wallpaper="1"] body { background:#06070A; ov
   position:absolute; top:12px; left:12px; padding:3px 9px; border-radius:999px; font-size:11px; letter-spacing:.12em;
   background:rgba(120,150,255,.82); color:#fff; border:1px solid rgba(255,255,255,.4); backdrop-filter:blur(4px);
 }
-.detail-video.live-video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+.detail-video.live-video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; z-index:7; }
 .detail-info-live { display:block; margin-top:6px; font-size:11px; color:var(--tx-3); letter-spacing:.04em; }
 
 /* 网格 / 时间轴 / 书架缩略图上的「实况」角标 */
