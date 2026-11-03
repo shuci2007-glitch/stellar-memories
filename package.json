@@ -2,7 +2,7 @@
   "name": "stellar-memories",
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "星辰相册 - 把回忆变成可以探索的星系",
   "type": "module",
   "scripts": {

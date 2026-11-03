@@ -1,6 +1,6 @@
 [package]
 name = "stellar-memories"
-version = "1.4.3"
+version = "1.4.4"
 description = "星辰相册 - 把回忆变成可以探索的星系"
 authors = ["Stellar Memories"]
 edition = "2021"
