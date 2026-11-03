@@ -47,7 +47,7 @@ URL="https://github.com/$REPO/releases/download/v${APP_VERSION}/${SETUP_NAME}"
 cat > "$OUT_DIR/update.json" <<EOF
 {
   "version": "$APP_VERSION",
-  "notes": "支持安卓/华为「动态照片」实况：自动识别照片里内嵌的视频，时间轴「实况」可筛选，原图上方一点即播。幻灯片里视频与实况会完整播放到结尾再切页，Ken Burns 动画也走完；时间轴新增「放映」按钮，直接放映当前筛选结果。",
+  "notes": "时间轴页面新增「播放」：在当前页里逐张播放，照片镜头从原尺寸缓慢推到 1.32 倍、推到底才切下一张；视频与实况直接播放，实况先亮静帧再放动态。地图「播放这一天 / 连播全部行程」同步升级：媒体区显示原图或直接播视频，视频与实况播完才进下一站，并加了声音开关。",
   "pub_date": "$PUB_DATE",
   "platforms": {
     "windows-x86_64": {
